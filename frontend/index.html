@@ -4,77 +4,111 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Roomz — LAN Synced Audio</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="static/colors.css" />
+  <link rel="stylesheet" href="static/_reset.css" />
+  <link rel="stylesheet" href="static/base.css" />
+  <link rel="stylesheet" href="static/layout.css" />
+  <link rel="stylesheet" href="static/components.css" />
 </head>
-<body class="bg-zinc-900 text-zinc-100 min-h-screen flex flex-col">
-  <header class="flex items-center justify-between px-4 py-3 border-b border-zinc-700">
-    <h1 class="text-xl font-semibold">Roomz</h1>
-    <div class="flex items-center gap-2">
-      <span id="ws-status" class="text-sm text-zinc-400">Connecting…</span>
-      <label class="flex items-center gap-2 text-sm">
+<body>
+  <header class="header">
+    <div class="header__nav">
+      <nav class="header__nav-buttons">
+        <button type="button" id="btn-menu-library" class="nav-btn">Library</button>
+        <button type="button" id="btn-menu-chat" class="nav-btn">Chat</button>
+      </nav>
+      <h1 class="header__title">Roomz</h1>
+    </div>
+    <div class="header__meta">
+      <span id="ws-status" class="ws-status">Connecting…</span>
+      <label class="label label--inline">
         <span>Speaker delay (ms)</span>
-        <input type="range" id="delay-slider" min="0" max="500" value="0" class="w-24 accent-amber-500" />
+        <input type="range" id="delay-slider" min="0" max="500" value="0" />
         <span id="delay-value">0</span>
       </label>
     </div>
   </header>
 
-  <main class="flex-1 flex overflow-hidden">
-    <section class="flex-1 flex flex-col min-w-0 p-4">
-      <!-- Now playing -->
-      <div class="flex items-center gap-4 p-4 rounded-xl bg-zinc-800/80 mb-4">
-        <div id="album-art" class="w-24 h-24 rounded-lg bg-zinc-700 flex items-center justify-center text-zinc-500 shrink-0">♪</div>
-        <div class="min-w-0 flex-1">
-          <div id="now-title" class="font-medium truncate">—</div>
-          <div id="now-artist" class="text-sm text-zinc-400 truncate">—</div>
-          <div class="flex items-center gap-2 mt-1">
-            <span id="progress-time" class="text-sm text-zinc-500">0:00</span>
-            <input type="range" id="seek-bar" min="0" max="100" value="0" class="flex-1 h-2 accent-amber-500" />
-            <span id="remaining-time" class="text-sm text-zinc-500">0:00</span>
+  <main class="main">
+    <aside id="panel-library" class="main__panel main__panel--library is-hidden">
+      <div class="panel__section">
+        <h2 class="panel__heading">Library folders</h2>
+        <ul id="library-roots" class="library-roots-list"></ul>
+        <div class="library-form-row">
+          <div>
+            <label class="label" for="library-path">Path</label>
+            <input type="text" id="library-path" class="input input--path" placeholder="/path/to/music" />
+          </div>
+          <div>
+            <label class="label" for="library-name">Name (optional)</label>
+            <input type="text" id="library-name" class="input input--name" placeholder="My Music" />
+          </div>
+          <button type="button" id="btn-add-library" class="btn">Add folder</button>
+        </div>
+        <p id="library-error" class="library-error is-hidden"></p>
+      </div>
+      <div class="panel__section library-actions">
+        <input type="file" id="file-input" accept="audio/*" class="input--hidden" multiple />
+        <select id="upload-root" class="select select--upload-root"></select>
+        <button type="button" id="btn-upload" class="btn">Upload</button>
+        <button type="button" id="btn-scan" class="btn">Scan all</button>
+      </div>
+      <div class="panel__section panel__section--grow">
+        <h2 class="panel__heading">All media</h2>
+        <div id="library-all-media" class="library-all-media"></div>
+      </div>
+    </aside>
+
+    <section class="main__content">
+      <div class="now-playing">
+        <div id="album-art" class="now-playing__art">♪</div>
+        <div class="now-playing__info">
+          <div id="now-title" class="now-playing__title">—</div>
+          <div id="now-artist" class="now-playing__artist">—</div>
+          <div class="now-playing__seek">
+            <span id="progress-time" class="progress-time">0:00</span>
+            <input type="range" id="seek-bar" min="0" max="100" value="0" />
+            <span id="remaining-time" class="remaining-time">0:00</span>
           </div>
         </div>
       </div>
 
-      <!-- Controls -->
-      <div class="flex items-center justify-center gap-4 py-2">
-        <button id="btn-shuffle" type="button" class="p-2 rounded-full hover:bg-zinc-700 text-zinc-400" title="Shuffle">⇅</button>
-        <button id="btn-prev" type="button" class="p-2 rounded-full hover:bg-zinc-700">⏮</button>
-        <button id="btn-play" type="button" class="p-4 rounded-full bg-amber-500 hover:bg-amber-400 text-zinc-900">▶</button>
-        <button id="btn-next" type="button" class="p-2 rounded-full hover:bg-zinc-700">⏭</button>
-        <button id="btn-repeat" type="button" class="p-2 rounded-full hover:bg-zinc-700 text-zinc-400" title="Repeat">↻</button>
+      <div class="controls">
+        <button id="btn-shuffle" type="button" class="btn--icon" title="Shuffle">⇅</button>
+        <button id="btn-prev" type="button" class="btn--icon">⏮</button>
+        <button id="btn-play" type="button" class="btn--play">▶</button>
+        <button id="btn-next" type="button" class="btn--icon">⏭</button>
+        <button id="btn-repeat" type="button" class="btn--icon" title="Repeat">↻</button>
       </div>
-      <div class="flex items-center justify-center gap-2 py-1">
-        <span class="text-sm text-zinc-500">Volume</span>
-        <input type="range" id="volume-slider" min="0" max="100" value="100" class="w-32 accent-amber-500" />
-      </div>
-
-      <!-- Upload & Scan -->
-      <div class="flex gap-2 py-4">
-        <input type="file" id="file-input" accept="audio/*" class="hidden" multiple />
-        <button id="btn-upload" type="button" class="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600">Upload</button>
-        <button id="btn-scan" type="button" class="px-4 py-2 rounded-lg bg-zinc-700 hover:bg-zinc-600">Scan folder</button>
+      <div class="controls__volume">
+        <span class="progress-time">Volume</span>
+        <input type="range" id="volume-slider" min="0" max="100" value="100" />
       </div>
 
-      <!-- Playlist -->
-      <div class="flex-1 min-h-0 flex flex-col">
-        <h2 class="text-sm font-medium text-zinc-400 mb-2">Playlist</h2>
-        <ul id="playlist" class="flex-1 overflow-auto rounded-lg border border-zinc-700 divide-y divide-zinc-700"></ul>
+      <div class="playlist-area">
+        <div class="playlist-area__head">
+          <h2 class="playlist-area__title">Playlist</h2>
+          <button type="button" id="btn-playlist-clear" class="btn">Clear all</button>
+        </div>
+        <ul id="playlist" class="playlist"></ul>
       </div>
     </section>
 
-    <aside class="w-80 border-l border-zinc-700 flex flex-col bg-zinc-800/50">
-      <h2 class="p-3 text-sm font-medium text-zinc-400 border-b border-zinc-700">Chat</h2>
-      <ul id="chat-messages" class="flex-1 overflow-auto p-2 space-y-1 text-sm"></ul>
-      <div class="p-2 border-t border-zinc-700">
-        <div class="flex gap-2">
-          <input type="text" id="chat-input" placeholder="Message…" class="flex-1 px-3 py-2 rounded-lg bg-zinc-700 border border-zinc-600 focus:outline-none focus:ring-1 focus:ring-amber-500" />
-          <button id="chat-send" type="button" class="px-3 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-zinc-900">Send</button>
+    <aside id="panel-chat" class="main__panel main__panel--chat is-hidden">
+      <h2 class="panel__heading" style="padding: 0.75rem; border-bottom: 1px solid var(--color-border);">Chat</h2>
+      <ul id="chat-messages" class="chat-messages"></ul>
+      <div class="chat-form">
+        <div class="chat-form__row">
+          <input type="text" id="chat-author" class="input chat-form__input" placeholder="Your name…" />
+        </div>
+        <div class="chat-form__row">
+          <input type="text" id="chat-input" class="input chat-form__input" placeholder="Message…" />
+          <button type="button" id="chat-send" class="btn btn--primary">Send</button>
         </div>
       </div>
     </aside>
   </main>
 
-  <script src="app.js"></script>
+  <script src="static/app.js"></script>
 </body>
 </html>

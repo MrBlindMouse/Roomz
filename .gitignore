@@ -1,0 +1,39 @@
+# Python / uv
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Data (user content + local DB)
+data/music/*
+!data/music/.gitkeep
+data/app.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

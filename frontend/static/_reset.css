@@ -1,0 +1,18 @@
+/* Layer order (lowest → highest). Must appear before any layered rules. */
+@layer reset, base, layout, components;
+
+@layer reset {
+  *, *::before, *::after { box-sizing: border-box; }
+  * { margin: 0; padding: 0; }
+  html { -webkit-text-size-adjust: 100%; }
+  body { line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  img, picture, video, canvas, svg { display: block; max-width: 100%; }
+  input, button, textarea, select { font: inherit; color: inherit; }
+  button { background: none; border: none; cursor: pointer; }
+  p, h1, h2, h3, h4, h5, h6 { overflow-wrap: break-word; }
+  ul, ol { list-style: none; }
+  a { color: inherit; text-decoration: none; }
+
+  :focus-visible { outline: 2px solid var(--color-ink-accent); outline-offset: 2px; }
+  :focus:not(:focus-visible) { outline: none; }
+}

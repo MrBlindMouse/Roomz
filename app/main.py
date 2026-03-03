@@ -14,14 +14,16 @@ from app.clock_sync import server_timestamp_utc
 from app.crud import (
     add_track_to_playlist,
     get_or_create_playback_state,
-    get_playlist_entries_with_tracks,
     get_ordered_track_ids,
+    get_playlist_item_dicts,
     get_track_by_id,
     remove_track_from_playlist,
     set_playback_state,
     set_playlist_order,
 )
-from app.db import ensure_dirs, init_db, MUSIC_DIR, async_session_maker
+from app.config import LIBRARY_BASE
+from app.crud import list_library_roots
+from app.db import ensure_dirs, init_db, async_session_maker
 from app.routers.api import router as api_router
 from app.ws_manager import manager
 
@@ -42,19 +44,34 @@ async def startup() -> None:
     logger.info("Roomz started")
 
 
-def _resolve_music_path(filename: str) -> Path:
-    """Resolve filename to path under data/music/. Reject path traversal."""
-    base = MUSIC_DIR.resolve()
-    path = (MUSIC_DIR / filename).resolve()
-    if not path.is_relative_to(base) or path == base:
+async def _resolve_track_path(track_id: int) -> tuple[Path, str]:
+    """Resolve track by id; validate filepath under a library root or LIBRARY_BASE. Return (path, filename)."""
+    async with async_session_maker() as session:
+        track = await get_track_by_id(session, track_id)
+        if track is None:
+            raise HTTPException(status_code=404, detail="Track not found")
+        path = Path(track.filepath).resolve()
+        if not path.exists() or not path.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
+        try:
+            if path.is_relative_to(LIBRARY_BASE):
+                return path, track.filename
+        except (ValueError, TypeError):
+            pass
+        roots = await list_library_roots(session)
+        for r in roots:
+            try:
+                if path.is_relative_to(Path(r.path).resolve()):
+                    return path, track.filename
+            except (ValueError, TypeError):
+                continue
         raise HTTPException(status_code=404, detail="Not found")
-    return path
 
 
-@app.get("/music/{filename}")
-async def serve_music(request: Request, filename: str):
-    """Serve audio file with Range, Accept-Ranges, and ETag support for seeking."""
-    path = _resolve_music_path(filename)
+@app.get("/music/track/{track_id}")
+async def serve_music_by_track(request: Request, track_id: int):
+    """Serve audio file by track id with Range, Accept-Ranges, and ETag support."""
+    path, filename = await _resolve_track_path(track_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="File not found")
 
@@ -122,21 +139,8 @@ async def _build_state_snapshot() -> dict:
     """Build state_snapshot dict from DB (playback state + playlist)."""
     async with async_session_maker() as session:
         state = await get_or_create_playback_state(session)
-        entries = await get_playlist_entries_with_tracks(session)
+        playlist = await get_playlist_item_dicts(session)
         order = await get_ordered_track_ids(session)
-        playlist = [
-            {
-                "id": po.id,
-                "track_id": po.track_id,
-                "position": po.position,
-                "filename": t.filename,
-                "title": t.title,
-                "artist": t.artist,
-                "album": t.album,
-                "duration_seconds": t.duration_seconds,
-            }
-            for po, t in entries
-        ]
         current_track_filename = None
         if state.current_track_id:
             track = await get_track_by_id(session, state.current_track_id)
@@ -159,7 +163,7 @@ async def _build_state_snapshot() -> dict:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """Single global WebSocket: state sync, play/pause/seek/track, chat, playlist."""
+    """Single global WebSocket: state sync, play/pause/seek/track, chat, playlist. Uses a new DB session per message (see get_db in db.py for request-scoped API usage)."""
     await manager.connect(websocket)
     try:
         snapshot = await _build_state_snapshot()
@@ -266,20 +270,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         if isinstance(order, list):
                             await set_playlist_order(session, order)
                             await session.commit()
-                            entries = await get_playlist_entries_with_tracks(session)
-                            playlist = [
-                                {
-                                    "id": po.id,
-                                    "track_id": po.track_id,
-                                    "position": po.position,
-                                    "filename": t.filename,
-                                    "title": t.title,
-                                    "artist": t.artist,
-                                    "album": t.album,
-                                    "duration_seconds": t.duration_seconds,
-                                }
-                                for po, t in entries
-                            ]
+                            playlist = await get_playlist_item_dicts(session)
                             await manager.broadcast(
                                 {"type": "playlist_updated", "playlist": playlist}
                             )
@@ -288,20 +279,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         if track_id is not None:
                             await add_track_to_playlist(session, track_id)
                             await session.commit()
-                            entries = await get_playlist_entries_with_tracks(session)
-                            playlist = [
-                                {
-                                    "id": po.id,
-                                    "track_id": po.track_id,
-                                    "position": po.position,
-                                    "filename": t.filename,
-                                    "title": t.title,
-                                    "artist": t.artist,
-                                    "album": t.album,
-                                    "duration_seconds": t.duration_seconds,
-                                }
-                                for po, t in entries
-                            ]
+                            playlist = await get_playlist_item_dicts(session)
                             await manager.broadcast(
                                 {"type": "playlist_updated", "playlist": playlist}
                             )
@@ -310,20 +288,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         if track_id is not None:
                             await remove_track_from_playlist(session, track_id)
                             await session.commit()
-                            entries = await get_playlist_entries_with_tracks(session)
-                            playlist = [
-                                {
-                                    "id": po.id,
-                                    "track_id": po.track_id,
-                                    "position": po.position,
-                                    "filename": t.filename,
-                                    "title": t.title,
-                                    "artist": t.artist,
-                                    "album": t.album,
-                                    "duration_seconds": t.duration_seconds,
-                                }
-                                for po, t in entries
-                            ]
+                            playlist = await get_playlist_item_dicts(session)
                             await manager.broadcast(
                                 {"type": "playlist_updated", "playlist": playlist}
                             )

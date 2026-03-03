@@ -11,24 +11,26 @@ Roomz is a **single-global-stream**, LAN-synchronized audio player. One FastAPI 
 ## Stack
 
 - **Backend**: FastAPI, Uvicorn, SQLAlchemy 2.0 (async, aiosqlite), Alembic, SQLite at `data/app.db`. Dependencies managed with **uv** (`pyproject.toml`, `uv.lock`). No Docker.
-- **Frontend**: Vanilla HTML/CSS/JS, Tailwind Play CDN, single SPA at `/` (StaticFiles with `html=True`). Web Audio API for playback; &lt;audio&gt; fallback with 500 ms position correction.
-- **Audio**: Files in `data/music/`. Metadata via mutagen. Serving via `GET /music/{filename}` with Range/ETag for seeking.
+- **Frontend**: Vanilla HTML/CSS/JS, single SPA at `/` (StaticFiles with `html=True`). CSS and JS live in `frontend/static/`; layered vanilla CSS (reset, base, colors, layout, components); no Tailwind. Web Audio API for playback; &lt;audio&gt; fallback with 500 ms position correction.
+- **Audio**: Multiple user-chosen library folders (under `ROOMZ_LIBRARY_BASE` or `data/`). Metadata via mutagen. Serving via `GET /music/track/{track_id}` with Range/ETag. Scan is recursive.
 
 ## Key modules
 
-- `app/main.py` — FastAPI app, `GET /music/{filename}` (Range), `WebSocket /ws`, static mount for SPA.
+- `app/main.py` — FastAPI app, `GET /music/track/{track_id}` (Range), `WebSocket /ws`, static mount for SPA.
+- `app/config.py` — `LIBRARY_BASE`, `validate_library_path()` for allowed roots.
 - `app/ws_manager.py` — Global `ConnectionManager`: connect, disconnect, broadcast.
 - `app/clock_sync.py` — Server timestamp for client offset calculation (no server state).
-- `app/routers/api.py` — `POST /api/upload`, `POST /api/scan`, `GET /api/playlist`, playlist items/reorder.
-- `app/crud.py` — Tracks, playlist order, playback state (singleton).
-- `app/models.py` — Track, PlaylistOrder, PlaybackState.
+- `app/routers/api.py` — `GET/POST/DELETE /api/library-roots`, `POST /api/upload?root_id=`, `POST /api/scan?root_id=`, playlist.
+- `app/crud.py` — Library roots, tracks (with `library_root_id`, `filepath`), playlist, playback state.
+- `app/models.py` — LibraryRoot, Track, PlaylistOrder, PlaybackState.
+- `app/schemas.py` — Pydantic schemas for REST API (library roots, tracks, playlist, playback state).
 - `app/audio_utils.py` — Mutagen metadata extraction (async-safe).
 
 ## Conventions
 
 - Prefer simplicity and long-term maintainability. Self-documenting code, type hints, docstrings. Black/ruff.
 - Async everywhere; no blocking calls. Defensive error handling and structured logging.
-- Paths under `data/music/` only; resolve and reject path traversal. Validate upload types (audio allowlist).
+- Library paths must be under `LIBRARY_BASE` (env `ROOMZ_LIBRARY_BASE` or `data/`). Validate upload types (audio allowlist).
 - No auth (LAN-only). Upload rate limit in API.
 
 ## Running

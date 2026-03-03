@@ -5,7 +5,8 @@ LAN-synchronized single-stream audio playback: one global stream, all devices in
 - **Single global stream** — no rooms, no codes. One playlist and one playback state for the entire LAN.
 - **Sub-10 ms sync** on LAN using NTP-style clock sync and Web Audio API.
 - **Per-device delay** (0–500 ms) to compensate for speaker placement.
-- Upload or scan `./data/music/`, collaborative playlist, simple chat.
+- **Multiple library folders** — add paths from the UI (under an allowed base); scan recursively. Upload to a chosen folder.
+- Upload or scan, collaborative playlist, simple chat.
 
 ## Run
 
@@ -25,8 +26,9 @@ Then open `http://<this-machine-ip>:8000` in a browser.
 
 ## Adding music
 
-- **Upload**: Use the **Upload** button and choose MP3/WAV/OGG/M4A/FLAC files. They are saved to `./data/music/` and added to the playlist.
-- **Existing files**: Put files in `./data/music/`, then click **Scan folder**. New files are discovered and added to the DB and playlist.
+- **Library folders**: In **Library folders**, add a path (and optional name). Paths must be under the allowed base (default: project `data/`; set `ROOMZ_LIBRARY_BASE` to allow e.g. `/home/you/Music`). Remove a folder only when it has no tracks.
+- **Upload**: Choose a destination folder in the **Upload to** dropdown, then **Upload** and select MP3/WAV/OGG/M4A/FLAC files. They are saved under that folder and added to the playlist.
+- **Scan**: **Scan all** scans every library folder recursively; or click **Scan** next to a folder to scan only that one. New files are added to the DB and playlist.
 
 ## Per-device delay
 
@@ -43,7 +45,8 @@ Roomz/
 ├── pyproject.toml
 ├── uv.lock
 ├── app/
-│   ├── main.py          # FastAPI app, /music, /ws, static mount
+│   ├── main.py          # FastAPI app, /music/track/{id}, /ws, static mount
+│   ├── config.py        # LIBRARY_BASE, validate_library_path
 │   ├── models.py
 │   ├── schemas.py
 │   ├── crud.py
@@ -58,14 +61,19 @@ Roomz/
 │   └── app.db           # SQLite
 ├── frontend/
 │   ├── index.html
-│   ├── style.css
-│   └── app.js
+│   └── static/          # CSS and JS assets
+│       ├── app.js
+│       ├── colors.css
+│       ├── _reset.css
+│       ├── base.css
+│       ├── layout.css
+│       └── components.css
 └── alembic/
 ```
 
 ## Tech stack
 
 - **Backend**: FastAPI, Uvicorn, SQLAlchemy 2.0 (async), Alembic, SQLite, mutagen, aiofiles. Managed with **uv**.
-- **Frontend**: Vanilla HTML/CSS/JS, Tailwind via CDN, Web Audio API (with &lt;audio&gt; fallback).
+- **Frontend**: Vanilla HTML/CSS/JS, layered vanilla CSS (reset, base, colors, layout, components), Web Audio API (with &lt;audio&gt; fallback).
 
 No auth (LAN-only). Production run: `uv run uvicorn app.main:app --host 0.0.0.0 --port 8000`.

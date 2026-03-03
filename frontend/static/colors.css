@@ -1,0 +1,26 @@
+/* Roomz palette — unlayered :root so all layers can use variables */
+:root {
+  --color-amber: oklch(0.75 0.15 75);
+  --color-amber-hover: oklch(0.78 0.14 75);
+  --color-amber-active: oklch(0.68 0.16 75);
+  --color-mid-grey: oklch(0.5 0 0);
+
+  --color-canvas: oklch(0.16 0.005 260);
+  --color-ink: oklch(0.93 0.005 260);
+
+  --color-canvas-neutral: color-mix(in oklab, var(--color-mid-grey) 25%, var(--color-canvas));
+  --color-canvas-surface: color-mix(in oklab, var(--color-mid-grey) 35%, var(--color-canvas));
+  --color-canvas-accent: var(--color-amber);
+  --color-canvas-negative: color-mix(in oklab, oklch(0.55 0.2 25) 30%, var(--color-canvas));
+
+  --color-ink-muted: color-mix(in oklab, var(--color-mid-grey) 60%, var(--color-ink));
+  --color-ink-subtle: color-mix(in oklab, var(--color-mid-grey) 80%, var(--color-ink));
+  --color-ink-accent: var(--color-amber);
+  --color-ink-on-accent: oklch(0.2 0.02 75);
+
+  --color-border: color-mix(in oklab, var(--color-mid-grey) 40%, var(--color-canvas));
+
+  --shadow-color: color-mix(in oklab, var(--color-ink) 15%, transparent);
+  --shadow-sm: 1px 1px 3px var(--shadow-color);
+  --shadow-md: 4px 4px 12px var(--shadow-color);
+}

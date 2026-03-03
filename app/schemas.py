@@ -1,9 +1,28 @@
 """Pydantic schemas for API and WebSocket messages."""
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
+
+# ----- Library roots -----
+
+
+class LibraryRootOut(BaseModel):
+    """Library root as returned by API."""
+
+    id: int
+    path: str
+    name: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+class LibraryRootCreate(BaseModel):
+    """Body for POST /api/library-roots."""
+
+    path: str
+    name: Optional[str] = None
+
 
 # ----- Upload / scan -----
 
@@ -18,6 +37,13 @@ class TrackOut(BaseModel):
     album: Optional[str] = None
     duration_seconds: Optional[float] = None
     created_at: Optional[datetime] = None
+
+
+class TrackWithRootOut(TrackOut):
+    """Track with library root info for Library browse."""
+
+    library_root_id: Optional[int] = None
+    library_root_name: Optional[str] = None
 
 
 class ScanResult(BaseModel):
@@ -67,63 +93,7 @@ class PlaybackStateOut(BaseModel):
     playlist_order: list[int] = Field(default_factory=list)  # ordered track_ids
 
 
-# ----- WebSocket: client -> server -----
-
-
-class WsSyncRequest(BaseModel):
-    """Client sends for clock sync."""
-
-    type: str = "sync"
-    client_time: float  # performance.now() at send
-
-
-class WsPlay(BaseModel):
-    type: str = "play"
-
-
-class WsPause(BaseModel):
-    type: str = "pause"
-
-
-class WsSeek(BaseModel):
-    type: str = "seek"
-    position_seconds: float
-
-
-class WsSetTrack(BaseModel):
-    type: str = "set_track"
-    track_id: int
-
-
-class WsChat(BaseModel):
-    type: str = "chat"
-    text: str
-    author: Optional[str] = None
-
-
-class WsPlaylistReorder(BaseModel):
-    type: str = "playlist_reorder"
-    order: list[int]
-
-
-class WsPlaylistAdd(BaseModel):
-    type: str = "playlist_add"
-    track_id: int
-
-
-class WsPlaylistRemove(BaseModel):
-    type: str = "playlist_remove"
-    track_id: int
-
-
-# ----- WebSocket: server -> client -----
-
-
-def ws_message(type: str, **payload: Any) -> dict[str, Any]:
-    """Build a WebSocket message dict."""
-    return {"type": type, **payload}
-
-
+# ----- WebSocket (documentation; handler in main.py uses raw JSON) -----
 # state_snapshot: { type, state: PlaybackStateOut, playlist: [PlaylistItem], current_track_filename? }
 # sync_response: { type: "sync_response", server_utc, client_time }
 # play / pause / seek / set_track: { type, position, server_timestamp, track_id, is_playing? }

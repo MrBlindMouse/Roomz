@@ -1,4 +1,4 @@
-"""CRUD operations for tracks, playlist, and playback state."""
+"""CRUD operations for library roots, tracks, playlist, and playback state."""
 
 from datetime import datetime
 from typing import Optional
@@ -6,8 +6,49 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import MUSIC_DIR
-from app.models import PlaybackState, PlaylistOrder, Track
+from app.models import LibraryRoot, PlaybackState, PlaylistOrder, Track
+
+# ----- Library roots -----
+
+
+async def list_library_roots(session: AsyncSession) -> list[LibraryRoot]:
+    """Return all library roots ordered by id."""
+    result = await session.execute(select(LibraryRoot).order_by(LibraryRoot.id))
+    return list(result.scalars().all())
+
+
+async def create_library_root(
+    session: AsyncSession,
+    path: str,
+    name: Optional[str] = None,
+) -> LibraryRoot:
+    """Create a library root. path must be absolute and validated by caller."""
+    root = LibraryRoot(path=path, name=name)
+    session.add(root)
+    await session.flush()
+    return root
+
+
+async def get_library_root_by_id(session: AsyncSession, root_id: int) -> Optional[LibraryRoot]:
+    """Get library root by primary key."""
+    result = await session.execute(select(LibraryRoot).where(LibraryRoot.id == root_id))
+    return result.scalar_one_or_none()
+
+
+async def delete_library_root(session: AsyncSession, root_id: int) -> None:
+    """Remove a library root. Caller must ensure no tracks reference it or handle orphaning."""
+    result = await session.execute(select(LibraryRoot).where(LibraryRoot.id == root_id))
+    root = result.scalar_one_or_none()
+    if root:
+        await session.delete(root)
+        await session.flush()
+
+
+async def get_default_library_root(session: AsyncSession) -> Optional[LibraryRoot]:
+    """Return the first library root (e.g. for upload when no root_id given)."""
+    roots = await list_library_roots(session)
+    return roots[0] if roots else None
+
 
 # ----- Tracks -----
 
@@ -15,16 +56,18 @@ from app.models import PlaybackState, PlaylistOrder, Track
 async def create_track(
     session: AsyncSession,
     filename: str,
+    filepath: str,
+    library_root_id: Optional[int] = None,
     title: Optional[str] = None,
     artist: Optional[str] = None,
     album: Optional[str] = None,
     duration_seconds: Optional[float] = None,
 ) -> Track:
-    """Create a track and return it. filepath is data/music/filename."""
-    filepath = str(MUSIC_DIR / filename)
+    """Create a track. filepath is full path on disk; filename is basename for display."""
     track = Track(
         filename=filename,
         filepath=filepath,
+        library_root_id=library_root_id,
         title=title,
         artist=artist,
         album=album,
@@ -41,9 +84,13 @@ async def get_track_by_id(session: AsyncSession, track_id: int) -> Optional[Trac
     return result.scalar_one_or_none()
 
 
-async def get_track_by_filename(session: AsyncSession, filename: str) -> Optional[Track]:
-    """Get track by filename."""
-    result = await session.execute(select(Track).where(Track.filename == filename))
+async def get_track_by_filepath(
+    session: AsyncSession, library_root_id: int, filepath: str
+) -> Optional[Track]:
+    """Get track by library root and full filepath (for scan dedup)."""
+    result = await session.execute(
+        select(Track).where(Track.library_root_id == library_root_id, Track.filepath == filepath)
+    )
     return result.scalar_one_or_none()
 
 
@@ -74,6 +121,26 @@ async def get_playlist_entries_with_tracks(
     return list(result.all())
 
 
+def playlist_entry_to_item_dict(po: PlaylistOrder, t: Track) -> dict:
+    """Build a dict for one playlist entry (shape compatible with schemas.PlaylistItem)."""
+    return {
+        "id": po.id,
+        "track_id": po.track_id,
+        "position": po.position,
+        "filename": t.filename,
+        "title": t.title,
+        "artist": t.artist,
+        "album": t.album,
+        "duration_seconds": t.duration_seconds,
+    }
+
+
+async def get_playlist_item_dicts(session: AsyncSession) -> list[dict]:
+    """Return playlist as list of item dicts (compatible with schemas.PlaylistItem)."""
+    entries = await get_playlist_entries_with_tracks(session)
+    return [playlist_entry_to_item_dict(po, t) for po, t in entries]
+
+
 async def set_playlist_order(session: AsyncSession, order: list[int]) -> None:
     """Replace playlist order with given list of track_ids. Removes missing, adds new at end."""
     # Delete all and re-add in new order
@@ -84,14 +151,19 @@ async def set_playlist_order(session: AsyncSession, order: list[int]) -> None:
     await session.flush()
 
 
-async def add_track_to_playlist(session: AsyncSession, track_id: int) -> None:
-    """Append track to end of playlist."""
+async def add_track_to_playlist(
+    session: AsyncSession, track_id: int
+) -> Optional[tuple[PlaylistOrder, Track]]:
+    """Append track to end of playlist. Returns (PlaylistOrder, Track) for the new entry, or None if already in playlist."""
     order = await get_ordered_track_ids(session)
     if track_id in order:
-        return
+        return None
     position = len(order)
-    session.add(PlaylistOrder(track_id=track_id, position=position))
+    po = PlaylistOrder(track_id=track_id, position=position)
+    session.add(po)
     await session.flush()
+    track = await get_track_by_id(session, track_id)
+    return (po, track) if track else None
 
 
 async def remove_track_from_playlist(session: AsyncSession, track_id: int) -> None:
@@ -104,13 +176,6 @@ async def remove_track_from_playlist(session: AsyncSession, track_id: int) -> No
     # Renumber remaining
     order = await get_ordered_track_ids(session)
     await set_playlist_order(session, order)
-
-
-async def append_track_to_playlist_and_get_position(session: AsyncSession, track_id: int) -> int:
-    """Add track to playlist and return its position (for new uploads)."""
-    await add_track_to_playlist(session, track_id)
-    order = await get_ordered_track_ids(session)
-    return order.index(track_id)
 
 
 # ----- Playback state (singleton) -----

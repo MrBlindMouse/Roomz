@@ -23,6 +23,9 @@
   let lastUpdateServerTimestamp = 0;
   let repeatMode = 0; // 0 off, 1 one, 2 all
   let shuffle = false;
+  let libraryRoots = [];
+  let libraryPanelOpen = false;
+  let chatPanelOpen = false;
 
   let audioContext = null;
   let currentBuffer = null;
@@ -50,11 +53,24 @@
     btnShuffle: $('btn-shuffle'),
     btnRepeat: $('btn-repeat'),
     volumeSlider: $('volume-slider'),
+    libraryRoots: $('library-roots'),
+    libraryPath: $('library-path'),
+    libraryName: $('library-name'),
+    btnAddLibrary: $('btn-add-library'),
+    libraryError: $('library-error'),
+    uploadRoot: $('upload-root'),
     fileInput: $('file-input'),
     btnUpload: $('btn-upload'),
     btnScan: $('btn-scan'),
     playlist: $('playlist'),
+    btnPlaylistClear: $('btn-playlist-clear'),
+    panelLibrary: $('panel-library'),
+    panelChat: $('panel-chat'),
+    btnMenuLibrary: $('btn-menu-library'),
+    btnMenuChat: $('btn-menu-chat'),
+    libraryAllMedia: $('library-all-media'),
     chatMessages: $('chat-messages'),
+    chatAuthor: $('chat-author'),
     chatInput: $('chat-input'),
     chatSend: $('chat-send'),
   };
@@ -116,15 +132,15 @@
     el.playlist.innerHTML = '';
     playlist.forEach((item) => {
       const li = document.createElement('li');
-      li.className = 'flex items-center gap-2 p-2 hover:bg-zinc-700/50';
+      li.className = 'playlist-item';
       li.dataset.trackId = String(item.track_id);
       li.dataset.position = String(item.position);
       li.draggable = true;
       li.innerHTML = `
-        <span class="text-zinc-500 w-6">${item.position + 1}</span>
-        <span class="flex-1 truncate">${(item.title || item.filename || '—')}</span>
-        <span class="text-zinc-500 text-sm">${formatTime(item.duration_seconds)}</span>
-        <button type="button" class="remove-track p-1 rounded hover:bg-zinc-600 text-zinc-400" data-track-id="${item.track_id}">✕</button>
+        <span class="playlist-item__num">${item.position + 1}</span>
+        <span class="playlist-item__title">${(item.title || item.filename || '—')}</span>
+        <span class="playlist-item__dur">${formatTime(item.duration_seconds)}</span>
+        <button type="button" class="remove-track" data-track-id="${item.track_id}">✕</button>
       `;
       li.querySelector('.remove-track').addEventListener('click', (e) => {
         e.stopPropagation();
@@ -163,6 +179,122 @@
       order.splice(fromIndex, 1);
       order.splice(toIndex, 0, fromId);
       sendWs({ type: 'playlist_reorder', order });
+    });
+  }
+
+  async function fetchLibraryRoots() {
+    try {
+      const r = await fetch(`${API_BASE}/api/library-roots`);
+      if (!r.ok) return;
+      libraryRoots = await r.json();
+      renderLibraryRoots();
+      renderUploadRootSelect();
+    } catch (e) {
+      console.error('Fetch library roots failed', e);
+    }
+  }
+
+  function renderLibraryRoots() {
+    el.libraryRoots.innerHTML = '';
+    libraryRoots.forEach((root) => {
+      const li = document.createElement('li');
+      li.className = 'library-root-item';
+      li.innerHTML = `
+        <span class="library-root-item__name" title="${root.path}">${root.name || root.path}</span>
+        <div class="library-root-item__actions">
+          <button type="button" class="scan-root" data-root-id="${root.id}">Scan</button>
+          <button type="button" class="remove-root" data-root-id="${root.id}">Remove</button>
+        </div>
+      `;
+      li.querySelector('.scan-root').addEventListener('click', async () => {
+        try {
+          const r = await fetch(`${API_BASE}/api/scan?root_id=${root.id}`, { method: 'POST' });
+          if (!r.ok) throw new Error(await r.text());
+          const data = await r.json();
+          if (data.added > 0) {
+            const list = await fetch(`${API_BASE}/api/playlist`).then((res) => res.json());
+            playlist = list;
+            renderPlaylist();
+            fetchAllTracks();
+          }
+        } catch (e) { console.error('Scan failed', e); }
+      });
+      li.querySelector('.remove-root').addEventListener('click', async () => {
+        try {
+          const r = await fetch(`${API_BASE}/api/library-roots/${root.id}`, { method: 'DELETE' });
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({ detail: r.statusText }));
+            el.libraryError.textContent = err.detail || 'Failed to remove';
+            el.libraryError.classList.remove('is-hidden');
+            return;
+          }
+          el.libraryError.classList.add('is-hidden');
+          await fetchLibraryRoots();
+        } catch (e) { console.error('Remove root failed', e); }
+      });
+      el.libraryRoots.appendChild(li);
+    });
+  }
+
+  function renderUploadRootSelect() {
+    el.uploadRoot.innerHTML = '';
+    libraryRoots.forEach((root) => {
+      const opt = document.createElement('option');
+      opt.value = root.id;
+      opt.textContent = root.name || root.path;
+      el.uploadRoot.appendChild(opt);
+    });
+  }
+
+  async function fetchAllTracks() {
+    try {
+      const r = await fetch(`${API_BASE}/api/tracks`);
+      if (!r.ok) return;
+      const tracks = await r.json();
+      renderAllMedia(tracks);
+    } catch (e) {
+      console.error('Fetch tracks failed', e);
+    }
+  }
+
+  function renderAllMedia(tracks) {
+    if (!el.libraryAllMedia) return;
+    el.libraryAllMedia.innerHTML = '';
+    const byRoot = {};
+    tracks.forEach((t) => {
+      const key = t.library_root_id != null ? String(t.library_root_id) : 'none';
+      if (!byRoot[key]) byRoot[key] = { name: t.library_root_name || 'Other', tracks: [] };
+      byRoot[key].tracks.push(t);
+    });
+    Object.entries(byRoot).forEach(([key, group]) => {
+      const section = document.createElement('div');
+      section.className = 'library-section';
+      const heading = document.createElement('div');
+      heading.className = 'library-section__heading';
+      heading.textContent = group.name;
+      section.appendChild(heading);
+      const ul = document.createElement('ul');
+      ul.className = 'library-section__list';
+      group.tracks.forEach((t) => {
+        const li = document.createElement('li');
+        li.className = 'library-section__item';
+        li.innerHTML = `
+          <span class="library-section__item-title" title="${(t.title || t.filename || '').replace(/"/g, '&quot;')}">${t.title || t.filename || '—'}</span>
+          <span class="library-section__item-dur">${formatTime(t.duration_seconds)}</span>
+          <button type="button" class="library-add" data-track-id="${t.id}">Add</button>
+        `;
+        li.querySelector('.library-add').addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendWs({ type: 'playlist_add', track_id: t.id });
+        });
+        li.addEventListener('click', (e) => {
+          if (e.target.classList.contains('library-add')) return;
+          sendWs({ type: 'set_track', track_id: t.id });
+        });
+        ul.appendChild(li);
+      });
+      section.appendChild(ul);
+      el.libraryAllMedia.appendChild(section);
     });
   }
 
@@ -225,7 +357,7 @@
       positionSeconds = msg.position ?? 0;
       lastUpdateServerTimestamp = msg.server_timestamp ?? 0;
       currentTrackId = msg.track_id ?? currentTrackId;
-      isPlaying = msg.is_playing ?? typ === 'play' || typ === 'set_track';
+      isPlaying = msg.is_playing ?? (typ === 'play' || typ === 'set_track');
       applyPlaybackState();
       updateNowPlayingUI();
       return;
@@ -233,7 +365,7 @@
     if (typ === 'chat') {
       const ul = el.chatMessages;
       const li = document.createElement('li');
-      li.className = 'break-words';
+      li.className = 'chat-message';
       li.textContent = `[${msg.author}]: ${msg.text}`;
       ul.appendChild(li);
       ul.scrollTop = ul.scrollHeight;
@@ -259,7 +391,7 @@
         if (isPlaying) audioFallback.play().catch(() => {});
         else audioFallback.pause();
       } else {
-        startFallbackAudio(track.filename, pos);
+        startFallbackAudio(track.track_id, pos);
       }
       return;
     }
@@ -270,7 +402,7 @@
       gainNode.gain.value = el.volumeSlider.value / 100;
       window._roomzGainNode = gainNode;
     }
-    if (currentTrackId && currentBuffer && currentTrackFilename === track.filename) {
+    if (currentTrackId === track.track_id && currentBuffer) {
       if (isPlaying) {
         const duration = (currentBuffer.duration || 0) - pos;
         if (duration > 0) {
@@ -282,7 +414,7 @@
         lastUpdateServerTimestamp = clientNowSeconds();
       }
     } else {
-      loadAndPlayTrack(track.filename, pos, isPlaying);
+      loadAndPlayTrack(track.track_id, pos, isPlaying);
     }
   }
 
@@ -345,15 +477,16 @@
     }
   }
 
-  async function loadAndPlayTrack(filename, offset, play) {
+  async function loadAndPlayTrack(trackId, offset, play) {
     stopSource();
-    const url = `${API_BASE}/music/${encodeURIComponent(filename)}`;
+    const url = `${API_BASE}/music/track/${trackId}`;
     try {
       const res = await fetch(url);
       if (!res.ok) throw new Error(res.statusText);
       const buf = await res.arrayBuffer();
       currentBuffer = await audioContext.decodeAudioData(buf);
-      currentTrackFilename = filename;
+      const track = getCurrentTrack();
+      currentTrackFilename = track ? track.filename : null;
       const duration = currentBuffer.duration - offset;
       if (play && duration > 0) {
         startSourceAt(audioContext.currentTime, offset, duration);
@@ -365,15 +498,15 @@
       console.warn('Web Audio failed, using fallback', e);
       useFallback = true;
       if (!audioFallback) audioFallback = new Audio();
-      startFallbackAudio(filename, offset);
+      startFallbackAudio(trackId, offset);
       if (isPlaying) audioFallback.play().catch(() => {});
     }
     updateNowPlayingUI();
   }
 
-  function startFallbackAudio(filename, offset) {
+  function startFallbackAudio(trackId, offset) {
     if (!audioFallback) audioFallback = new Audio();
-    audioFallback.src = `${API_BASE}/music/${encodeURIComponent(filename)}`;
+    audioFallback.src = `${API_BASE}/music/track/${trackId}`;
     audioFallback.currentTime = offset;
     if (isPlaying) audioFallback.play().catch(() => {});
     if (!fallbackCorrectionInterval) {
@@ -397,6 +530,27 @@
   });
   window.addEventListener('online', () => connectWs());
 
+  if (el.btnMenuLibrary && el.panelLibrary) {
+    el.btnMenuLibrary.addEventListener('click', () => {
+      libraryPanelOpen = !libraryPanelOpen;
+      el.panelLibrary.classList.toggle('is-hidden', !libraryPanelOpen);
+      el.btnMenuLibrary.classList.toggle('is-active', libraryPanelOpen);
+      if (libraryPanelOpen) fetchAllTracks();
+    });
+  }
+  if (el.btnMenuChat && el.panelChat) {
+    el.btnMenuChat.addEventListener('click', () => {
+      chatPanelOpen = !chatPanelOpen;
+      el.panelChat.classList.toggle('is-hidden', !chatPanelOpen);
+      el.btnMenuChat.classList.toggle('is-active', chatPanelOpen);
+    });
+  }
+  if (el.btnPlaylistClear) {
+    el.btnPlaylistClear.addEventListener('click', () => {
+      sendWs({ type: 'playlist_reorder', order: [] });
+    });
+  }
+
   el.btnPlay.addEventListener('click', () => {
     if (isPlaying) sendWs({ type: 'pause' });
     else sendWs({ type: 'play' });
@@ -412,11 +566,11 @@
   });
   el.btnShuffle.addEventListener('click', () => {
     shuffle = !shuffle;
-    el.btnShuffle.classList.toggle('text-amber-500', shuffle);
+    el.btnShuffle.classList.toggle('is-active', shuffle);
   });
   el.btnRepeat.addEventListener('click', () => {
     repeatMode = (repeatMode + 1) % 3;
-    el.btnRepeat.classList.toggle('text-amber-500', repeatMode > 0);
+    el.btnRepeat.classList.toggle('is-active', repeatMode > 0);
     el.btnRepeat.textContent = repeatMode === 1 ? '1' : repeatMode === 2 ? '∞' : '↻';
   });
   el.seekBar.addEventListener('change', () => {
@@ -433,15 +587,43 @@
     el.delayValue.textContent = delayCompensationMs;
   });
 
+  el.btnAddLibrary.addEventListener('click', async () => {
+    const path = el.libraryPath.value.trim();
+    if (!path) return;
+    el.libraryError.classList.add('is-hidden');
+    try {
+      const r = await fetch(`${API_BASE}/api/library-roots`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, name: el.libraryName.value.trim() || null }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        el.libraryError.textContent = err.detail || 'Failed to add';
+        el.libraryError.classList.remove('is-hidden');
+        return;
+      }
+      el.libraryPath.value = '';
+      el.libraryName.value = '';
+      await fetchLibraryRoots();
+    } catch (e) {
+      console.error('Add library failed', e);
+      el.libraryError.textContent = e.message || 'Failed to add';
+      el.libraryError.classList.remove('is-hidden');
+    }
+  });
+
   el.btnUpload.addEventListener('click', () => el.fileInput.click());
   el.fileInput.addEventListener('change', async () => {
     const files = el.fileInput.files;
     if (!files?.length) return;
+    const rootId = el.uploadRoot.value ? parseInt(el.uploadRoot.value, 10) : null;
     for (const file of files) {
       const fd = new FormData();
       fd.append('file', file);
+      const url = rootId != null ? `${API_BASE}/api/upload?root_id=${rootId}` : `${API_BASE}/api/upload`;
       try {
-        const r = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: fd });
+        const r = await fetch(url, { method: 'POST', body: fd });
         if (!r.ok) throw new Error(await r.text());
         const data = await r.json();
         sendWs({ type: 'playlist_add', track_id: data.id });
@@ -456,10 +638,11 @@
       const r = await fetch(`${API_BASE}/api/scan`, { method: 'POST' });
       if (!r.ok) throw new Error(await r.text());
       const data = await r.json();
-          if (data.added > 0) {
+      if (data.added > 0) {
         const list = await fetch(`${API_BASE}/api/playlist`).then((res) => res.json());
         playlist = list;
         renderPlaylist();
+        fetchAllTracks();
       }
     } catch (e) {
       console.error('Scan failed', e);
@@ -467,9 +650,10 @@
   });
 
   el.chatSend.addEventListener('click', () => {
+    const author = el.chatAuthor.value.trim();
     const text = el.chatInput.value.trim();
     if (!text) return;
-    sendWs({ type: 'chat', text });
+    sendWs({ type: 'chat', author: author || undefined, text });
     el.chatInput.value = '';
   });
   el.chatInput.addEventListener('keydown', (e) => {
@@ -477,5 +661,6 @@
   });
 
   connectWs();
+  fetchLibraryRoots();
   uiLoop();
 })();

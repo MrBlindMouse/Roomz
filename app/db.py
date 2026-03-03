@@ -37,7 +37,7 @@ async_session_maker = async_sessionmaker(
 
 
 async def get_db() -> AsyncSession:
-    """Dependency that yields an async session."""
+    """Dependency that yields an async session. Used by request-scoped API routes (commit on success, rollback on exception). WebSocket handler in main.py uses async_session_maker() per message for explicit commit boundaries."""
     async with async_session_maker() as session:
         try:
             yield session

@@ -1,4 +1,4 @@
-"""SQLAlchemy models: Track, PlaylistOrder, PlaybackState."""
+"""SQLAlchemy models: LibraryRoot, Track, PlaylistOrder, PlaybackState."""
 
 from datetime import datetime
 from typing import Optional
@@ -13,20 +13,39 @@ class Base(DeclarativeBase):
     pass
 
 
+class LibraryRoot(Base):
+    """A user-chosen library folder (scanned recursively)."""
+
+    __tablename__ = "library_roots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    path: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
+
+    tracks: Mapped[list["Track"]] = relationship("Track", back_populates="library_root")
+
+
 class Track(Base):
-    """A single audio file in data/music/."""
+    """A single audio file; may live in any library root (full filepath stored)."""
 
     __tablename__ = "tracks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    filename: Mapped[str] = mapped_column(String(512), unique=True, nullable=False, index=True)
-    filepath: Mapped[str] = mapped_column(String(1024), nullable=False)
+    library_root_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("library_roots.id", ondelete="SET NULL"), nullable=True
+    )
+    filename: Mapped[str] = mapped_column(String(512), nullable=False, index=True)
+    filepath: Mapped[str] = mapped_column(String(1024), nullable=False, index=True)
     title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     artist: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     album: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
 
+    library_root: Mapped[Optional["LibraryRoot"]] = relationship(
+        "LibraryRoot", back_populates="tracks"
+    )
     playlist_entries: Mapped[list["PlaylistOrder"]] = relationship(
         "PlaylistOrder",
         back_populates="track",
