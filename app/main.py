@@ -6,7 +6,7 @@ from pathlib import Path
 
 import aiofiles
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.audio_utils import get_mime_for_filename
@@ -34,6 +34,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio")
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Log all HTTP errors (4xx INFO, 5xx ERROR) and return the same response."""
+    status = exc.status_code
+    if status >= 500:
+        logger.error(
+            "HTTP %s %s %s: %s",
+            request.method,
+            request.url.path,
+            status,
+            exc.detail,
+            exc_info=False,
+        )
+    else:
+        logger.info(
+            "HTTP %s %s %s: %s",
+            request.method,
+            request.url.path,
+            status,
+            exc.detail,
+        )
+    return JSONResponse(status_code=status, content={"detail": exc.detail})
+
+
+@app.exception_handler(Exception)
+async def uncaught_exception_handler(request: Request, exc: Exception):
+    """Log uncaught exceptions and return 500 with generic message."""
+    logger.exception(
+        "Uncaught exception %s %s: %s",
+        request.method,
+        request.url.path,
+        exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+    )
 
 
 @app.on_event("startup")

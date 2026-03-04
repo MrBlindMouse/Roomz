@@ -75,6 +75,26 @@
     chatSend: $('chat-send'),
   };
 
+  /**
+   * Centralized error reporting: log to console and optionally show message in UI.
+   * @param {string} context - Short label for the error (e.g. "Fetch library roots").
+   * @param {Error|unknown} err - The error or response body.
+   * @param {string} [userMessage] - If set, shown in libraryError element (library panel).
+   */
+  function reportError(context, err, userMessage) {
+    console.error(context, err);
+    if (userMessage != null && userMessage !== '' && el.libraryError) {
+      el.libraryError.textContent = userMessage;
+      el.libraryError.classList.remove('is-hidden');
+    }
+  }
+
+  function hideLibraryError() {
+    if (el.libraryError) {
+      el.libraryError.classList.add('is-hidden');
+    }
+  }
+
   function clientNowMs() {
     return performance.now() + clockOffsetMs;
   }
@@ -185,12 +205,18 @@
   async function fetchLibraryRoots() {
     try {
       const r = await fetch(`${API_BASE}/api/library-roots`);
-      if (!r.ok) return;
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Couldn\'t load library';
+        reportError('Fetch library roots failed', err, msg);
+        return;
+      }
+      hideLibraryError();
       libraryRoots = await r.json();
       renderLibraryRoots();
       renderUploadRootSelect();
     } catch (e) {
-      console.error('Fetch library roots failed', e);
+      reportError('Fetch library roots failed', e, 'Couldn\'t load library');
     }
   }
 
@@ -209,7 +235,13 @@
       li.querySelector('.scan-root').addEventListener('click', async () => {
         try {
           const r = await fetch(`${API_BASE}/api/scan?root_id=${root.id}`, { method: 'POST' });
-          if (!r.ok) throw new Error(await r.text());
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({ detail: r.statusText }));
+            const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Scan failed';
+            reportError('Scan failed', err, msg);
+            return;
+          }
+          hideLibraryError();
           const data = await r.json();
           if (data.added > 0) {
             const list = await fetch(`${API_BASE}/api/playlist`).then((res) => res.json());
@@ -217,20 +249,23 @@
             renderPlaylist();
             fetchAllTracks();
           }
-        } catch (e) { console.error('Scan failed', e); }
+        } catch (e) {
+          reportError('Scan failed', e, 'Scan failed');
+        }
       });
       li.querySelector('.remove-root').addEventListener('click', async () => {
         try {
           const r = await fetch(`${API_BASE}/api/library-roots/${root.id}`, { method: 'DELETE' });
           if (!r.ok) {
             const err = await r.json().catch(() => ({ detail: r.statusText }));
-            el.libraryError.textContent = err.detail || 'Failed to remove';
-            el.libraryError.classList.remove('is-hidden');
+            reportError('Remove root failed', err, err.detail || 'Failed to remove');
             return;
           }
-          el.libraryError.classList.add('is-hidden');
+          hideLibraryError();
           await fetchLibraryRoots();
-        } catch (e) { console.error('Remove root failed', e); }
+        } catch (e) {
+          reportError('Remove root failed', e, 'Failed to remove');
+        }
       });
       el.libraryRoots.appendChild(li);
     });
@@ -249,11 +284,17 @@
   async function fetchAllTracks() {
     try {
       const r = await fetch(`${API_BASE}/api/tracks`);
-      if (!r.ok) return;
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Couldn\'t load tracks';
+        reportError('Fetch tracks failed', err, msg);
+        return;
+      }
+      hideLibraryError();
       const tracks = await r.json();
       renderAllMedia(tracks);
     } catch (e) {
-      console.error('Fetch tracks failed', e);
+      reportError('Fetch tracks failed', e, 'Couldn\'t load tracks');
     }
   }
 
@@ -326,7 +367,9 @@
       try {
         const msg = JSON.parse(event.data);
         handleWsMessage(msg);
-      } catch (_) {}
+      } catch (err) {
+        reportError('WS message parse', err);
+      }
     };
   }
 
@@ -495,7 +538,7 @@
         lastUpdateServerTimestamp = clientNowSeconds();
       }
     } catch (e) {
-      console.warn('Web Audio failed, using fallback', e);
+      reportError('Web Audio failed, using fallback', e);
       useFallback = true;
       if (!audioFallback) audioFallback = new Audio();
       startFallbackAudio(trackId, offset);
@@ -529,6 +572,16 @@
     if (document.visibilityState === 'visible') startClockSync();
   });
   window.addEventListener('online', () => connectWs());
+
+  window.addEventListener('error', (event) => {
+    reportError(
+      'Uncaught error',
+      event.error || event.message,
+    );
+  });
+  window.addEventListener('unhandledrejection', (event) => {
+    reportError('Unhandled promise rejection', event.reason);
+  });
 
   if (el.btnMenuLibrary && el.panelLibrary) {
     el.btnMenuLibrary.addEventListener('click', () => {
@@ -590,7 +643,7 @@
   el.btnAddLibrary.addEventListener('click', async () => {
     const path = el.libraryPath.value.trim();
     if (!path) return;
-    el.libraryError.classList.add('is-hidden');
+    hideLibraryError();
     try {
       const r = await fetch(`${API_BASE}/api/library-roots`, {
         method: 'POST',
@@ -599,17 +652,14 @@
       });
       if (!r.ok) {
         const err = await r.json().catch(() => ({ detail: r.statusText }));
-        el.libraryError.textContent = err.detail || 'Failed to add';
-        el.libraryError.classList.remove('is-hidden');
+        reportError('Add library failed', err, err.detail || 'Failed to add');
         return;
       }
       el.libraryPath.value = '';
       el.libraryName.value = '';
       await fetchLibraryRoots();
     } catch (e) {
-      console.error('Add library failed', e);
-      el.libraryError.textContent = e.message || 'Failed to add';
-      el.libraryError.classList.remove('is-hidden');
+      reportError('Add library failed', e, e.message || 'Failed to add');
     }
   });
 
@@ -624,11 +674,17 @@
       const url = rootId != null ? `${API_BASE}/api/upload?root_id=${rootId}` : `${API_BASE}/api/upload`;
       try {
         const r = await fetch(url, { method: 'POST', body: fd });
-        if (!r.ok) throw new Error(await r.text());
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ detail: r.statusText }));
+          const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Upload failed';
+          reportError('Upload failed', err, msg);
+          continue;
+        }
+        hideLibraryError();
         const data = await r.json();
         sendWs({ type: 'playlist_add', track_id: data.id });
       } catch (e) {
-        console.error('Upload failed', e);
+        reportError('Upload failed', e, 'Upload failed');
       }
     }
     el.fileInput.value = '';
@@ -636,7 +692,13 @@
   el.btnScan.addEventListener('click', async () => {
     try {
       const r = await fetch(`${API_BASE}/api/scan`, { method: 'POST' });
-      if (!r.ok) throw new Error(await r.text());
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({ detail: r.statusText }));
+        const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Scan failed';
+        reportError('Scan failed', err, msg);
+        return;
+      }
+      hideLibraryError();
       const data = await r.json();
       if (data.added > 0) {
         const list = await fetch(`${API_BASE}/api/playlist`).then((res) => res.json());
@@ -645,7 +707,7 @@
         fetchAllTracks();
       }
     } catch (e) {
-      console.error('Scan failed', e);
+      reportError('Scan failed', e, 'Scan failed');
     }
   });
 

@@ -3,11 +3,14 @@
 Ensures data/ and data/music/ exist on startup.
 """
 
+import logging
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import Base
+
+logger = logging.getLogger(__name__)
 
 # Path relative to project root (where uvicorn is typically run from)
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -44,6 +47,7 @@ async def get_db() -> AsyncSession:
             await session.commit()
         except Exception:
             await session.rollback()
+            logger.debug("Request failed, session rolled back")
             raise
         finally:
             await session.close()

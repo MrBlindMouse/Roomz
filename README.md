@@ -1,12 +1,30 @@
-# Roomz
+# Roomz (Name change pending)
 
-LAN-synchronized single-stream audio playback: one global stream, all devices in sync.
+LAN-synchronized single-stream audio playback: one global stream, all devices in sync. Like an old school radio!
 
 - **Single global stream** — no rooms, no codes. One playlist and one playback state for the entire LAN.
 - **Sub-10 ms sync** on LAN using NTP-style clock sync and Web Audio API.
 - **Per-device delay** (0–500 ms) to compensate for speaker placement.
 - **Multiple library folders** — add paths from the UI (under an allowed base); scan recursively. Upload to a chosen folder.
 - Upload or scan, collaborative playlist, simple chat.
+
+
+## The Why
+
+I created Roomz because I was annoyed that I cannot connect more than 1 BT Speaker to my phone for wider 'covarage'. 
+
+Now I can play music throughout my house from multiple devices.
+
+I'm pretty sure something else already exists for this. . . but so-what.
+
+### Future plans:
+- Add a centralized control, for managing per device delays and volume from one client.
+- Create a client for rpi or headless devices.
+- Maybe add a 'Announcement' function to the 'Main' client, to broadcast voice over the stream.
+
+### Warning
+
+Roomz is meant to be run on a private LAN/Home network. There is no security built in, and anybody connected to the network has full access. If enough interest is shown for it, then security might be added at a later date.
 
 ## Run
 
@@ -16,6 +34,17 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
 Then open `http://<this-machine-ip>:8000` in a browser.
+
+## Development
+
+Install with dev dependencies (pytest, ruff, black), then run tests and lint:
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run ruff check .
+uv run black --check .   # optional
+```
 
 ## Multi-device sync test
 
@@ -44,6 +73,9 @@ On a typical LAN, sync within **&lt;10 ms** is achievable with Web Audio API and
 Roomz/
 ├── pyproject.toml
 ├── uv.lock
+├── tests/
+│   ├── conftest.py
+│   └── test_app.py
 ├── app/
 │   ├── main.py          # FastAPI app, /music/track/{id}, /ws, static mount
 │   ├── config.py        # LIBRARY_BASE, validate_library_path
