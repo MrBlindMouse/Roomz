@@ -22,23 +22,24 @@
     flex-shrink: 0;
   }
 
-  .header__nav {
+  .header .nav {
     display: flex;
     align-items: center;
     gap: 1rem;
   }
 
-  .header__nav-buttons {
+  .header .nav .buttons {
     display: flex;
     gap: 0.25rem;
   }
 
-  .header__title {
+  .header .title {
     font-size: 1.25rem;
     font-weight: 600;
+    text-align: center;
   }
 
-  .header__meta {
+  .header .meta {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -51,7 +52,7 @@
     min-height: 0;
   }
 
-  .main__content {
+  .main .content {
     flex: 1;
     min-width: 0;
     display: flex;
@@ -59,7 +60,7 @@
     padding: 1rem;
   }
 
-  .main__panel {
+  .main .panel {
     width: 20rem;
     flex-shrink: 0;
     display: flex;
@@ -68,20 +69,20 @@
     background: var(--color-canvas-neutral);
   }
 
-  .main__panel--library {
+  .main .panel--library {
     border-right: 1px solid var(--color-border);
   }
 
-  .main__panel--chat {
+  .main .panel--chat {
     border-left: 1px solid var(--color-border);
   }
 
-  .panel__section {
+  .panel .section {
     padding: 0.75rem;
     border-bottom: 1px solid var(--color-border);
   }
 
-  .panel__section--grow {
+  .panel .section--grow {
     flex: 1;
     display: flex;
     flex-direction: column;
@@ -98,7 +99,7 @@
     margin-bottom: 1rem;
   }
 
-  .now-playing__art {
+  .now-playing .art {
     width: 6rem;
     height: 6rem;
     border-radius: 0.5rem;
@@ -110,19 +111,19 @@
     flex-shrink: 0;
   }
 
-  .now-playing__info {
+  .now-playing .info {
     min-width: 0;
     flex: 1;
   }
 
-  .now-playing__title {
+  .now-playing .title {
     font-weight: 500;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  .now-playing__artist {
+  .now-playing .artist {
     font-size: 0.875rem;
     color: var(--color-ink-muted);
     white-space: nowrap;
@@ -130,7 +131,7 @@
     text-overflow: ellipsis;
   }
 
-  .now-playing__seek {
+  .now-playing .seek {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -145,7 +146,7 @@
     padding: 0.5rem 0;
   }
 
-  .controls__volume {
+  .controls .volume {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -160,7 +161,7 @@
     flex-direction: column;
   }
 
-  .playlist-area__head {
+  .playlist-area .head {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -168,7 +169,7 @@
     margin-bottom: 0.5rem;
   }
 
-  .playlist-area__title {
+  .playlist-area .title {
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--color-ink-muted);

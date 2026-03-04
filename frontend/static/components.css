@@ -95,7 +95,7 @@
   .input--path { width: 12rem; max-width: 100%; }
   .input--name { width: 7rem; }
   .select--upload-root { max-width: 8rem; }
-  .chat-form__input { flex: 1; min-width: 0; }
+  .chat-form .input { flex: 1; min-width: 0; }
 
   .label {
     display: block;
@@ -111,7 +111,7 @@
     margin-bottom: 0;
   }
 
-  .panel__heading {
+  .panel .heading {
     font-size: 0.875rem;
     font-weight: 500;
     color: var(--color-ink-muted);
@@ -155,7 +155,7 @@
 
   .playlist,
   .library-roots-list,
-  .library-section__list {
+  .library-section .list {
     list-style: none;
     margin-left: 0;
   }
@@ -197,13 +197,13 @@
     background: color-mix(in oklab, var(--color-amber) 25%, transparent);
   }
 
-  .playlist-item__num {
+  .playlist-item .num {
     width: 1.5rem;
     flex-shrink: 0;
     color: var(--color-ink-subtle);
   }
 
-  .playlist-item__title {
+  .playlist-item .title {
     flex: 1;
     min-width: 0;
     white-space: nowrap;
@@ -211,7 +211,7 @@
     text-overflow: ellipsis;
   }
 
-  .playlist-item__dur {
+  .playlist-item .dur {
     font-size: 0.875rem;
     color: var(--color-ink-subtle);
     flex-shrink: 0;
@@ -228,7 +228,7 @@
     background: var(--color-border);
   }
 
-  .now-playing__seek input {
+  .now-playing .seek input {
     flex: 1;
     min-width: 0;
     height: 0.5rem;
@@ -248,7 +248,7 @@
     margin-bottom: 0.75rem;
   }
 
-  .library-section__heading {
+  .library-section .heading {
     font-size: 0.75rem;
     font-weight: 500;
     color: var(--color-ink-subtle);
@@ -256,11 +256,11 @@
     border-bottom: 1px solid var(--color-border);
   }
 
-  .library-section__list {
+  .library-section .list {
     border-top: 1px solid color-mix(in oklab, var(--color-border) 50%, transparent);
   }
 
-  .library-section__item {
+  .library-section .item {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -269,11 +269,11 @@
     cursor: pointer;
   }
 
-  .library-section__item:hover {
+  .library-section .item:hover {
     background: color-mix(in oklab, var(--color-border) 30%, transparent);
   }
 
-  .library-section__item-title {
+  .library-section .item-title {
     flex: 1;
     min-width: 0;
     white-space: nowrap;
@@ -281,12 +281,12 @@
     text-overflow: ellipsis;
   }
 
-  .library-section__item-dur {
+  .library-section .item-dur {
     color: var(--color-ink-subtle);
     flex-shrink: 0;
   }
 
-  .library-section__item .library-add {
+  .library-section .item .library-add {
     padding: 0.125rem 0.5rem;
     border-radius: 0.25rem;
     font-size: 0.75rem;
@@ -294,7 +294,7 @@
     color: var(--color-ink);
   }
 
-  .library-section__item .library-add:hover {
+  .library-section .item .library-add:hover {
     background: var(--color-ink-subtle);
   }
 
@@ -310,7 +310,7 @@
     background: color-mix(in oklab, var(--color-border) 30%, transparent);
   }
 
-  .library-root-item__name {
+  .library-root-item .name {
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
@@ -318,7 +318,7 @@
     font-size: 0.875rem;
   }
 
-  .library-root-item__actions {
+  .library-root-item .actions {
     display: flex;
     gap: 0.25rem;
     flex-shrink: 0;
@@ -369,7 +369,7 @@
     border-top: 1px solid var(--color-border);
   }
 
-  .chat-form__row {
+  .chat-form .row {
     display: flex;
     gap: 0.5rem;
   }

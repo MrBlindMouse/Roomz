@@ -137,9 +137,9 @@
       li.dataset.position = String(item.position);
       li.draggable = true;
       li.innerHTML = `
-        <span class="playlist-item__num">${item.position + 1}</span>
-        <span class="playlist-item__title">${(item.title || item.filename || '—')}</span>
-        <span class="playlist-item__dur">${formatTime(item.duration_seconds)}</span>
+        <span class="num">${item.position + 1}</span>
+        <span class="title">${(item.title || item.filename || '—')}</span>
+        <span class="dur">${formatTime(item.duration_seconds)}</span>
         <button type="button" class="remove-track" data-track-id="${item.track_id}">✕</button>
       `;
       li.querySelector('.remove-track').addEventListener('click', (e) => {
@@ -200,8 +200,8 @@
       const li = document.createElement('li');
       li.className = 'library-root-item';
       li.innerHTML = `
-        <span class="library-root-item__name" title="${root.path}">${root.name || root.path}</span>
-        <div class="library-root-item__actions">
+        <span class="name" title="${root.path}">${root.name || root.path}</span>
+        <div class="actions">
           <button type="button" class="scan-root" data-root-id="${root.id}">Scan</button>
           <button type="button" class="remove-root" data-root-id="${root.id}">Remove</button>
         </div>
@@ -270,17 +270,17 @@
       const section = document.createElement('div');
       section.className = 'library-section';
       const heading = document.createElement('div');
-      heading.className = 'library-section__heading';
+      heading.className = 'heading';
       heading.textContent = group.name;
       section.appendChild(heading);
       const ul = document.createElement('ul');
-      ul.className = 'library-section__list';
+      ul.className = 'list';
       group.tracks.forEach((t) => {
         const li = document.createElement('li');
-        li.className = 'library-section__item';
+        li.className = 'item';
         li.innerHTML = `
-          <span class="library-section__item-title" title="${(t.title || t.filename || '').replace(/"/g, '&quot;')}">${t.title || t.filename || '—'}</span>
-          <span class="library-section__item-dur">${formatTime(t.duration_seconds)}</span>
+          <span class="item-title" title="${(t.title || t.filename || '').replace(/"/g, '&quot;')}">${t.title || t.filename || '—'}</span>
+          <span class="item-dur">${formatTime(t.duration_seconds)}</span>
           <button type="button" class="library-add" data-track-id="${t.id}">Add</button>
         `;
         li.querySelector('.library-add').addEventListener('click', (e) => {

@@ -12,14 +12,16 @@
 </head>
 <body>
   <header class="header">
-    <div class="header__nav">
-      <nav class="header__nav-buttons">
+    <div class="nav">
+      <nav class="buttons">
         <button type="button" id="btn-menu-library" class="nav-btn">Library</button>
         <button type="button" id="btn-menu-chat" class="nav-btn">Chat</button>
       </nav>
-      <h1 class="header__title">Roomz</h1>
     </div>
-    <div class="header__meta">
+    <div class="title">
+      <h1>Roomz</h1>
+    </div>
+    <div class="meta">
       <span id="ws-status" class="ws-status">Connecting…</span>
       <label class="label label--inline">
         <span>Speaker delay (ms)</span>
@@ -30,9 +32,9 @@
   </header>
 
   <main class="main">
-    <aside id="panel-library" class="main__panel main__panel--library is-hidden">
-      <div class="panel__section">
-        <h2 class="panel__heading">Library folders</h2>
+    <aside id="panel-library" class="panel panel--library is-hidden">
+      <div class="section">
+        <h2 class="heading">Library folders</h2>
         <ul id="library-roots" class="library-roots-list"></ul>
         <div class="library-form-row">
           <div>
@@ -47,25 +49,25 @@
         </div>
         <p id="library-error" class="library-error is-hidden"></p>
       </div>
-      <div class="panel__section library-actions">
+      <div class="section library-actions">
         <input type="file" id="file-input" accept="audio/*" class="input--hidden" multiple />
         <select id="upload-root" class="select select--upload-root"></select>
         <button type="button" id="btn-upload" class="btn">Upload</button>
         <button type="button" id="btn-scan" class="btn">Scan all</button>
       </div>
-      <div class="panel__section panel__section--grow">
-        <h2 class="panel__heading">All media</h2>
+      <div class="section section--grow">
+        <h2 class="heading">All media</h2>
         <div id="library-all-media" class="library-all-media"></div>
       </div>
     </aside>
 
-    <section class="main__content">
+    <section class="content">
       <div class="now-playing">
-        <div id="album-art" class="now-playing__art">♪</div>
-        <div class="now-playing__info">
-          <div id="now-title" class="now-playing__title">—</div>
-          <div id="now-artist" class="now-playing__artist">—</div>
-          <div class="now-playing__seek">
+        <div id="album-art" class="art">♪</div>
+        <div class="info">
+          <div id="now-title" class="title">—</div>
+          <div id="now-artist" class="artist">—</div>
+          <div class="seek">
             <span id="progress-time" class="progress-time">0:00</span>
             <input type="range" id="seek-bar" min="0" max="100" value="0" />
             <span id="remaining-time" class="remaining-time">0:00</span>
@@ -80,29 +82,31 @@
         <button id="btn-next" type="button" class="btn--icon">⏭</button>
         <button id="btn-repeat" type="button" class="btn--icon" title="Repeat">↻</button>
       </div>
-      <div class="controls__volume">
+      <div class="volume">
         <span class="progress-time">Volume</span>
         <input type="range" id="volume-slider" min="0" max="100" value="100" />
       </div>
 
       <div class="playlist-area">
-        <div class="playlist-area__head">
-          <h2 class="playlist-area__title">Playlist</h2>
+        <div class="head">
+          <h2 class="title">Playlist</h2>
           <button type="button" id="btn-playlist-clear" class="btn">Clear all</button>
         </div>
         <ul id="playlist" class="playlist"></ul>
       </div>
     </section>
 
-    <aside id="panel-chat" class="main__panel main__panel--chat is-hidden">
-      <h2 class="panel__heading" style="padding: 0.75rem; border-bottom: 1px solid var(--color-border);">Chat</h2>
+    <aside id="panel-chat" class="panel panel--chat is-hidden">
+      <div class="section">
+        <h2 class="heading">Chat</h2>
+      </div>
       <ul id="chat-messages" class="chat-messages"></ul>
       <div class="chat-form">
-        <div class="chat-form__row">
-          <input type="text" id="chat-author" class="input chat-form__input" placeholder="Your name…" />
+        <div class="row">
+          <input type="text" id="chat-author" class="input" placeholder="Your name…" />
         </div>
-        <div class="chat-form__row">
-          <input type="text" id="chat-input" class="input chat-form__input" placeholder="Message…" />
+        <div class="row">
+          <input type="text" id="chat-input" class="input" placeholder="Message…" />
           <button type="button" id="chat-send" class="btn btn--primary">Send</button>
         </div>
       </div>
