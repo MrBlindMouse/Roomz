@@ -8,7 +8,9 @@ import aiofiles
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
+from app.logging_config import configure_logging
 from app.audio_utils import get_mime_for_filename
 from app.clock_sync import server_timestamp_utc
 from app.crud import (
@@ -18,22 +20,33 @@ from app.crud import (
     get_playlist_item_dicts,
     get_track_by_id,
     remove_track_from_playlist,
-    set_playback_state,
     set_playlist_order,
 )
+from app.player import Player
 from app.config import LIBRARY_BASE
 from app.crud import list_library_roots
 from app.db import ensure_dirs, init_db, async_session_maker
 from app.routers.api import router as api_router
 from app.ws_manager import manager
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio")
+
+
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Readiness/liveness: 200 if app and DB are up, 503 if DB unreachable."""
+    try:
+        async with async_session_maker() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "db": "unreachable"},
+        )
+    return JSONResponse(status_code=200, content={"status": "ok"})
 
 
 @app.exception_handler(HTTPException)
@@ -77,9 +90,15 @@ async def uncaught_exception_handler(request: Request, exc: Exception):
 
 @app.on_event("startup")
 async def startup() -> None:
-    """Create data dirs and DB tables."""
+    """Create data dirs, DB tables, and ensure single Player is ready (load from DB)."""
     ensure_dirs()
     await init_db()
+    player = getattr(app.state, "player", None)
+    if player is None:
+        player = Player()
+        app.state.player = player
+    async with async_session_maker() as session:
+        await player.load_from_session(session)
     logger.info("Roomz started")
 
 
@@ -174,30 +193,34 @@ async def serve_music_by_track(request: Request, track_id: int):
     )
 
 
+def _get_player() -> Player:
+    """Return the app's Player, creating and loading from DB if not yet set (e.g. TestClient WS before lifespan)."""
+    player = getattr(app.state, "player", None)
+    if player is None:
+        player = Player()
+        app.state.player = player
+    return player
+
+
 async def _build_state_snapshot() -> dict:
-    """Build state_snapshot dict from DB (playback state + playlist)."""
+    """Build state_snapshot from single Player (playback state) + DB (playlist, filename)."""
+    player = _get_player()
+    state = player.get_state_for_snapshot()
     async with async_session_maker() as session:
-        state = await get_or_create_playback_state(session)
         playlist = await get_playlist_item_dicts(session)
         order = await get_ordered_track_ids(session)
         current_track_filename = None
-        if state.current_track_id:
-            track = await get_track_by_id(session, state.current_track_id)
+        if state["current_track_id"]:
+            track = await get_track_by_id(session, state["current_track_id"])
             if track:
                 current_track_filename = track.filename
-        ts = state.updated_at.timestamp() if state.updated_at else 0.0
-        return {
-            "type": "state_snapshot",
-            "state": {
-                "current_track_id": state.current_track_id,
-                "is_playing": state.is_playing,
-                "position_seconds": state.position_seconds,
-                "last_update_server_timestamp": ts,
-                "playlist_order": order,
-            },
-            "playlist": playlist,
-            "current_track_filename": current_track_filename,
-        }
+    state["playlist_order"] = order
+    return {
+        "type": "state_snapshot",
+        "state": state,
+        "playlist": playlist,
+        "current_track_filename": current_track_filename,
+    }
 
 
 @app.websocket("/ws")
@@ -238,73 +261,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     }
                 )
                 continue
-            # Playback and playlist updates need DB + broadcast
+            # Playback: single Player applies command, then we commit and broadcast
+            if typ in ("play", "pause", "seek", "set_track"):
+                async with async_session_maker() as session:
+                    try:
+                        payload = await _get_player().apply_command(
+                            session,
+                            typ,
+                            track_id=msg.get("track_id"),
+                            position_seconds=msg.get("position_seconds"),
+                        )
+                        if payload:
+                            await session.commit()
+                            await manager.broadcast(payload)
+                    except Exception as e:
+                        logger.exception("Player command error: %s", e)
+                        await session.rollback()
+                continue
+            # Playlist updates need DB + broadcast
             async with async_session_maker() as session:
                 try:
-                    if typ == "play":
-                        await set_playback_state(session, is_playing=True)
-                        await session.commit()
-                        state = await get_or_create_playback_state(session)
-                        ts = server_timestamp_utc()
-                        await manager.broadcast(
-                            {
-                                "type": "play",
-                                "position": state.position_seconds,
-                                "server_timestamp": ts,
-                                "track_id": state.current_track_id,
-                                "is_playing": True,
-                            }
-                        )
-                    elif typ == "pause":
-                        await set_playback_state(session, is_playing=False)
-                        await session.commit()
-                        state = await get_or_create_playback_state(session)
-                        ts = server_timestamp_utc()
-                        await manager.broadcast(
-                            {
-                                "type": "pause",
-                                "position": state.position_seconds,
-                                "server_timestamp": ts,
-                                "track_id": state.current_track_id,
-                                "is_playing": False,
-                            }
-                        )
-                    elif typ == "seek":
-                        pos = msg.get("position_seconds", 0)
-                        await set_playback_state(session, position_seconds=pos)
-                        await session.commit()
-                        state = await get_or_create_playback_state(session)
-                        ts = server_timestamp_utc()
-                        await manager.broadcast(
-                            {
-                                "type": "seek",
-                                "position": state.position_seconds,
-                                "server_timestamp": ts,
-                                "track_id": state.current_track_id,
-                            }
-                        )
-                    elif typ == "set_track":
-                        track_id = msg.get("track_id")
-                        if track_id is not None:
-                            await set_playback_state(
-                                session,
-                                current_track_id=track_id,
-                                position_seconds=0,
-                                is_playing=True,
-                            )
-                            await session.commit()
-                            state = await get_or_create_playback_state(session)
-                            ts = server_timestamp_utc()
-                            await manager.broadcast(
-                                {
-                                    "type": "set_track",
-                                    "position": 0,
-                                    "server_timestamp": ts,
-                                    "track_id": track_id,
-                                    "is_playing": True,
-                                }
-                            )
-                    elif typ == "playlist_reorder":
+                    if typ == "playlist_reorder":
                         order = msg.get("order")
                         if isinstance(order, list):
                             await set_playlist_order(session, order)

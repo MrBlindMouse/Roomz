@@ -7,6 +7,13 @@ from app.db import get_db
 from app.main import app as main_app
 
 
+def test_health_returns_200(client: TestClient) -> None:
+    """GET /health returns 200 when app and DB are up."""
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_get_root_returns_200(client: TestClient) -> None:
     """SPA root returns 200."""
     response = client.get("/")

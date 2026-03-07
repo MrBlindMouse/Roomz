@@ -7,7 +7,6 @@ import logging
 from pathlib import Path
 
 from sqlalchemy import text
-from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models import Base
