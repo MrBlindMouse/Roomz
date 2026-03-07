@@ -28,6 +28,8 @@ Roomz is meant to be run on a private LAN/Home network. There is no security bui
 
 ## Run
 
+Copy `.env.example` to `.env` and adjust if needed (e.g. `ROOMZ_LIBRARY_BASE`). The app loads `.env` automatically at startup.
+
 ```bash
 uv sync
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000

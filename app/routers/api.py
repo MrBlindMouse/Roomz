@@ -240,44 +240,60 @@ def _collect_audio_paths_recursive(root_path: Path) -> list[Path]:
     return out
 
 
+# Commit every N new tracks during scan to release DB lock so other requests (playlist, playback) can proceed.
+SCAN_COMMIT_BATCH_SIZE = 50
+
+# Only one scan at a time; concurrent request gets 409.
+_scan_in_progress = False
+
+
 @router.post("/scan", response_model=ScanResult)
 async def scan_folder(
     root_id: int | None = None,
     db: AsyncSession = Depends(get_db),
 ):
     """Scan library root(s) recursively and add new audio files to DB and playlist."""
-    if root_id is not None:
-        roots = [await get_library_root_by_id(db, root_id)]
-        if roots[0] is None:
-            raise HTTPException(status_code=404, detail="Library root not found")
-    else:
-        roots = await list_library_roots(db)
-    added = 0
-    loop = asyncio.get_event_loop()
-    for root in roots:
-        root_path = Path(root.path)
-        if not root_path.exists() or not root_path.is_dir():
-            continue
-        paths = await loop.run_in_executor(None, _collect_audio_paths_recursive, root_path)
-        for path in paths:
-            filepath_str = str(path.resolve())
-            existing = await get_track_by_filepath(db, root.id, filepath_str)
-            if existing is not None:
+    global _scan_in_progress
+    if _scan_in_progress:
+        raise HTTPException(status_code=409, detail="Scan already in progress")
+    _scan_in_progress = True
+    try:
+        if root_id is not None:
+            roots = [await get_library_root_by_id(db, root_id)]
+            if roots[0] is None:
+                raise HTTPException(status_code=404, detail="Library root not found")
+        else:
+            roots = await list_library_roots(db)
+        added = 0
+        loop = asyncio.get_event_loop()
+        for root in roots:
+            root_path = Path(root.path)
+            if not root_path.exists() or not root_path.is_dir():
                 continue
-            metadata = await extract_metadata(path)
-            track = await create_track(
-                session=db,
-                filename=path.name,
-                filepath=filepath_str,
-                library_root_id=root.id,
-                title=metadata.get("title"),
-                artist=metadata.get("artist"),
-                album=metadata.get("album"),
-                duration_seconds=metadata.get("duration_seconds"),
-            )
-            await add_track_to_playlist(db, track.id)
-            added += 1
-    return ScanResult(added=added)
+            paths = await loop.run_in_executor(None, _collect_audio_paths_recursive, root_path)
+            for path in paths:
+                filepath_str = str(path.resolve())
+                existing = await get_track_by_filepath(db, root.id, filepath_str)
+                if existing is not None:
+                    continue
+                metadata = await extract_metadata(path)
+                track = await create_track(
+                    session=db,
+                    filename=path.name,
+                    filepath=filepath_str,
+                    library_root_id=root.id,
+                    title=metadata.get("title"),
+                    artist=metadata.get("artist"),
+                    album=metadata.get("album"),
+                    duration_seconds=metadata.get("duration_seconds"),
+                )
+                await add_track_to_playlist(db, track.id)
+                added += 1
+                if added % SCAN_COMMIT_BATCH_SIZE == 0:
+                    await db.commit()
+        return ScanResult(added=added)
+    finally:
+        _scan_in_progress = False
 
 
 @router.get("/playlist", response_model=list[PlaylistItem])

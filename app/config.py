@@ -3,9 +3,12 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import HTTPException
 
 from app.db import DATA_DIR
+
+load_dotenv()
 
 # All library root paths must resolve under this directory (env or default data/)
 LIBRARY_BASE_STR = os.environ.get("ROOMZ_LIBRARY_BASE")

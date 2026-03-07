@@ -26,9 +26,11 @@
   let libraryRoots = [];
   let libraryPanelOpen = false;
   let chatPanelOpen = false;
+  let scanInProgress = false;
 
   let audioContext = null;
   let currentBuffer = null;
+  let currentBufferTrackId = null; // track_id that currentBuffer belongs to
   let currentSource = null;
   let startedAt = 0;
   let bufferOffset = 0;
@@ -95,6 +97,21 @@
     }
   }
 
+  /**
+   * Set scan UI state: disable/enable all scan buttons and show "Scanning..." or normal label.
+   * @param {boolean} active - True while a scan request is in flight.
+   */
+  function setScanning(active) {
+    if (el.btnScan) {
+      el.btnScan.disabled = active;
+      el.btnScan.textContent = active ? 'Scanning...' : 'Scan all';
+    }
+    document.querySelectorAll('.scan-root').forEach((btn) => {
+      btn.disabled = active;
+      btn.textContent = active ? 'Scanning...' : 'Scan';
+    });
+  }
+
   function clientNowMs() {
     return performance.now() + clockOffsetMs;
   }
@@ -146,6 +163,8 @@
     const max = track2 && Number.isFinite(track2.duration_seconds) ? track2.duration_seconds : 100;
     el.seekBar.max = max;
     el.seekBar.value = Math.min(pos, max);
+    el.btnPlay.textContent = isPlaying ? '⏸' : '▶';
+    el.btnPlay.classList.toggle('is-playing', isPlaying);
   }
 
   function renderPlaylist() {
@@ -233,11 +252,14 @@
         </div>
       `;
       li.querySelector('.scan-root').addEventListener('click', async () => {
+        if (scanInProgress) return;
+        scanInProgress = true;
+        setScanning(true);
         try {
           const r = await fetch(`${API_BASE}/api/scan?root_id=${root.id}`, { method: 'POST' });
           if (!r.ok) {
             const err = await r.json().catch(() => ({ detail: r.statusText }));
-            const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Scan failed';
+            const msg = (r.status === 409 ? (err.detail ?? 'Scan already in progress') : (err.detail != null ? String(err.detail) : r.statusText)) || 'Scan failed';
             reportError('Scan failed', err, msg);
             return;
           }
@@ -251,6 +273,9 @@
           }
         } catch (e) {
           reportError('Scan failed', e, 'Scan failed');
+        } finally {
+          scanInProgress = false;
+          setScanning(false);
         }
       });
       li.querySelector('.remove-root').addEventListener('click', async () => {
@@ -269,6 +294,7 @@
       });
       el.libraryRoots.appendChild(li);
     });
+    setScanning(scanInProgress);
   }
 
   function renderUploadRootSelect() {
@@ -445,7 +471,7 @@
       gainNode.gain.value = el.volumeSlider.value / 100;
       window._roomzGainNode = gainNode;
     }
-    if (currentTrackId === track.track_id && currentBuffer) {
+    if (currentBufferTrackId === track.track_id && currentBuffer) {
       if (isPlaying) {
         const duration = (currentBuffer.duration || 0) - pos;
         if (duration > 0) {
@@ -528,6 +554,7 @@
       if (!res.ok) throw new Error(res.statusText);
       const buf = await res.arrayBuffer();
       currentBuffer = await audioContext.decodeAudioData(buf);
+      currentBufferTrackId = trackId;
       const track = getCurrentTrack();
       currentTrackFilename = track ? track.filename : null;
       const duration = currentBuffer.duration - offset;
@@ -690,11 +717,14 @@
     el.fileInput.value = '';
   });
   el.btnScan.addEventListener('click', async () => {
+    if (scanInProgress) return;
+    scanInProgress = true;
+    setScanning(true);
     try {
       const r = await fetch(`${API_BASE}/api/scan`, { method: 'POST' });
       if (!r.ok) {
         const err = await r.json().catch(() => ({ detail: r.statusText }));
-        const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Scan failed';
+        const msg = (r.status === 409 ? (err.detail ?? 'Scan already in progress') : (err.detail != null ? String(err.detail) : r.statusText)) || 'Scan failed';
         reportError('Scan failed', err, msg);
         return;
       }
@@ -708,6 +738,9 @@
       }
     } catch (e) {
       reportError('Scan failed', e, 'Scan failed');
+    } finally {
+      scanInProgress = false;
+      setScanning(false);
     }
   });
 
