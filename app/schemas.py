@@ -44,6 +44,7 @@ class TrackWithRootOut(TrackOut):
 
     library_root_id: Optional[int] = None
     library_root_name: Optional[str] = None
+    folder: Optional[str] = None  # parent dir relative to library root; "." when at root
 
 
 class ScanResult(BaseModel):
@@ -66,6 +67,7 @@ class PlaylistItem(BaseModel):
     artist: Optional[str] = None
     album: Optional[str] = None
     duration_seconds: Optional[float] = None
+    folder: Optional[str] = None  # containing folder relative to library root
 
 
 class PlaylistReorder(BaseModel):

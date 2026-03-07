@@ -50,7 +50,7 @@ def upgrade() -> None:
     # Insert default library root (data/music)
     conn = op.get_bind()
     from pathlib import Path
-    from datetime import datetime
+    from datetime import UTC, datetime
     script_dir = Path(__file__).resolve().parent
     project_root = script_dir.parent.parent
     default_music = str((project_root / "data" / "music").resolve())
@@ -58,7 +58,7 @@ def upgrade() -> None:
         sa.text(
             "INSERT INTO library_roots (path, name, created_at) VALUES (:path, :name, :created_at)"
         ),
-        {"path": default_music, "name": "Default", "created_at": datetime.utcnow().isoformat()},
+        {"path": default_music, "name": "Default", "created_at": datetime.now(UTC).isoformat()},
     )
     result = conn.execute(sa.text("SELECT id FROM library_roots WHERE path = :path"), {"path": default_music})
     row = result.fetchone()

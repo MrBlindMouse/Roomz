@@ -27,6 +27,7 @@ from app.crud import (
     playlist_entry_to_item_dict,
     remove_track_from_playlist,
     set_playlist_order,
+    track_folder_relative,
 )
 from app.db import get_db
 from app.schemas import (
@@ -77,6 +78,7 @@ async def get_all_tracks(db: AsyncSession = Depends(get_db)):
     tracks = await list_all_tracks(db)
     roots = await list_library_roots(db)
     root_map = {r.id: (r.name or r.path) for r in roots}
+    root_path_map = {r.id: r.path for r in roots}
     return [
         TrackWithRootOut(
             id=t.id,
@@ -88,6 +90,7 @@ async def get_all_tracks(db: AsyncSession = Depends(get_db)):
             created_at=t.created_at,
             library_root_id=t.library_root_id,
             library_root_name=root_map.get(t.library_root_id) if t.library_root_id else None,
+            folder=track_folder_relative(t.filepath, t.library_root_id, root_path_map),
         )
         for t in tracks
     ]
@@ -315,7 +318,11 @@ async def add_playlist_item(
     added = await add_track_to_playlist(db, body.track_id)
     if added is not None:
         po, t = added
-        return PlaylistItem.model_validate(playlist_entry_to_item_dict(po, t))
+        roots = await list_library_roots(db)
+        root_path_map = {r.id: r.path for r in roots}
+        return PlaylistItem.model_validate(
+            playlist_entry_to_item_dict(po, t, root_path_map)
+        )
     # Already in playlist: return the existing item.
     dicts = await get_playlist_item_dicts(db)
     for d in dicts:

@@ -1,9 +1,10 @@
 """CRUD operations for library roots, tracks, playlist, and playback state."""
 
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LibraryRoot, PlaybackState, PlaylistOrder, Track
@@ -103,6 +104,23 @@ async def list_all_tracks(session: AsyncSession) -> list[Track]:
 # ----- Playlist -----
 
 
+def track_folder_relative(
+    filepath: str,
+    library_root_id: Optional[int],
+    root_path_map: dict[int, str],
+) -> Optional[str]:
+    """Return the track's containing folder relative to its library root, or '.' if at root."""
+    if library_root_id is None or library_root_id not in root_path_map:
+        return None
+    root_path = Path(root_path_map[library_root_id]).resolve()
+    try:
+        parent = Path(filepath).parent.resolve()
+        rel = parent.relative_to(root_path)
+        return rel.as_posix() if rel.parts else "."
+    except (ValueError, TypeError):
+        return None
+
+
 async def get_ordered_track_ids(session: AsyncSession) -> list[int]:
     """Return playlist order as list of track_ids."""
     result = await session.execute(select(PlaylistOrder.track_id).order_by(PlaylistOrder.position))
@@ -121,8 +139,17 @@ async def get_playlist_entries_with_tracks(
     return list(result.all())
 
 
-def playlist_entry_to_item_dict(po: PlaylistOrder, t: Track) -> dict:
+def playlist_entry_to_item_dict(
+    po: PlaylistOrder,
+    t: Track,
+    root_path_map: Optional[dict[int, str]] = None,
+) -> dict:
     """Build a dict for one playlist entry (shape compatible with schemas.PlaylistItem)."""
+    folder = (
+        track_folder_relative(t.filepath, t.library_root_id, root_path_map)
+        if root_path_map
+        else None
+    )
     return {
         "id": po.id,
         "track_id": po.track_id,
@@ -132,19 +159,22 @@ def playlist_entry_to_item_dict(po: PlaylistOrder, t: Track) -> dict:
         "artist": t.artist,
         "album": t.album,
         "duration_seconds": t.duration_seconds,
+        "folder": folder,
     }
 
 
 async def get_playlist_item_dicts(session: AsyncSession) -> list[dict]:
     """Return playlist as list of item dicts (compatible with schemas.PlaylistItem)."""
     entries = await get_playlist_entries_with_tracks(session)
-    return [playlist_entry_to_item_dict(po, t) for po, t in entries]
+    roots = await list_library_roots(session)
+    root_path_map = {r.id: r.path for r in roots}
+    return [playlist_entry_to_item_dict(po, t, root_path_map) for po, t in entries]
 
 
 async def set_playlist_order(session: AsyncSession, order: list[int]) -> None:
     """Replace playlist order with given list of track_ids. Removes missing, adds new at end."""
-    # Delete all and re-add in new order
-    await session.execute(PlaylistOrder.__table__.delete())
+    # Delete all and re-add in new order (ORM delete keeps identity map in sync)
+    await session.execute(delete(PlaylistOrder))
     await session.flush()
     for pos, track_id in enumerate(order):
         session.add(PlaylistOrder(track_id=track_id, position=pos))
@@ -212,6 +242,6 @@ async def set_playback_state(
         state.is_playing = is_playing
     if position_seconds is not None:
         state.position_seconds = max(0.0, position_seconds)
-    state.updated_at = datetime.utcnow()
+    state.updated_at = datetime.now(UTC)
     await session.flush()
     return state

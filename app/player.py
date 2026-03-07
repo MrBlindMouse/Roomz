@@ -65,7 +65,12 @@ class Player:
                     "is_playing": True,
                 }
             if typ == "pause":
-                await set_playback_state(session, is_playing=False)
+                if position_seconds is not None:
+                    pos = max(0.0, position_seconds)
+                    await set_playback_state(session, is_playing=False, position_seconds=pos)
+                    self._position_seconds = pos
+                else:
+                    await set_playback_state(session, is_playing=False)
                 self._is_playing = False
                 self._last_update_server_timestamp = ts
                 return {

@@ -120,8 +120,9 @@
     return clientNowMs() / 1000;
   }
 
-  /** Compute local playback position from server state + clock + delay. */
+  /** Compute local playback position from server state + clock + delay. When paused, return frozen position. */
   function computedPositionSeconds() {
+    if (!isPlaying) return Math.max(0, positionSeconds);
     const serverTs = lastUpdateServerTimestamp;
     const now = clientNowSeconds();
     const delaySec = delayCompensationMs / 1000;
@@ -175,9 +176,14 @@
       li.dataset.trackId = String(item.track_id);
       li.dataset.position = String(item.position);
       li.draggable = true;
+      const titlePart = escapeHtml(item.title || item.filename || '—');
+      const folderPart =
+        item.folder && item.folder !== '.'
+          ? ` <span class="playlist-item-folder">· ${escapeHtml(item.folder)}</span>`
+          : '';
       li.innerHTML = `
         <span class="num">${item.position + 1}</span>
-        <span class="title">${(item.title || item.filename || '—')}</span>
+        <span class="playlist-item-title-wrap"><span class="title">${titlePart}</span>${folderPart}</span>
         <span class="dur">${formatTime(item.duration_seconds)}</span>
         <button type="button" class="remove-track" data-track-id="${item.track_id}">✕</button>
       `;
@@ -333,36 +339,83 @@
       if (!byRoot[key]) byRoot[key] = { name: t.library_root_name || 'Other', tracks: [] };
       byRoot[key].tracks.push(t);
     });
-    Object.entries(byRoot).forEach(([key, group]) => {
+    Object.entries(byRoot).forEach(([rootKey, group]) => {
       const section = document.createElement('div');
       section.className = 'library-section';
       const heading = document.createElement('div');
       heading.className = 'heading';
       heading.textContent = group.name;
       section.appendChild(heading);
-      const ul = document.createElement('ul');
-      ul.className = 'list';
+
+      const byFolder = {};
       group.tracks.forEach((t) => {
-        const li = document.createElement('li');
-        li.className = 'item';
-        li.innerHTML = `
-          <span class="item-title" title="${(t.title || t.filename || '').replace(/"/g, '&quot;')}">${t.title || t.filename || '—'}</span>
+        const f = t.folder;
+        const key = f === '.' || f === '' || f == null ? '' : f;
+        if (!byFolder[key]) byFolder[key] = [];
+        byFolder[key].push(t);
+      });
+      const folderKeys = Object.keys(byFolder).sort((a, b) => {
+        if (a === '') return -1;
+        if (b === '') return 1;
+        return a.localeCompare(b);
+      });
+
+      folderKeys.forEach((folderKey) => {
+        const folderTracks = byFolder[folderKey].sort((a, b) => {
+          const na = (a.title || a.filename || '').toLowerCase();
+          const nb = (b.title || b.filename || '').toLowerCase();
+          return na.localeCompare(nb);
+        });
+        const folderLabel = folderKey === '' ? '(root)' : folderKey;
+
+        const folderBlock = document.createElement('div');
+        folderBlock.className = 'library-folder';
+        const header = document.createElement('div');
+        header.className = 'library-folder-header';
+        header.setAttribute('role', 'button');
+        header.setAttribute('aria-expanded', 'true');
+        header.innerHTML = `
+          <span class="library-folder-chevron" aria-hidden="true">▼</span>
+          <span class="library-folder-label">${escapeHtml(folderLabel)}</span>
+        `;
+        header.addEventListener('click', () => {
+          const collapsed = folderBlock.classList.toggle('is-collapsed');
+          header.setAttribute('aria-expanded', String(!collapsed));
+        });
+
+        const ul = document.createElement('ul');
+        ul.className = 'list library-folder-list';
+        folderTracks.forEach((t) => {
+          const li = document.createElement('li');
+          li.className = 'item';
+          li.innerHTML = `
+          <span class="item-title" title="${escapeHtml((t.title || t.filename || ''))}">${escapeHtml(t.title || t.filename || '—')}</span>
           <span class="item-dur">${formatTime(t.duration_seconds)}</span>
           <button type="button" class="library-add" data-track-id="${t.id}">Add</button>
         `;
-        li.querySelector('.library-add').addEventListener('click', (e) => {
-          e.stopPropagation();
-          sendWs({ type: 'playlist_add', track_id: t.id });
+          li.querySelector('.library-add').addEventListener('click', (e) => {
+            e.stopPropagation();
+            sendWs({ type: 'playlist_add', track_id: t.id });
+          });
+          li.addEventListener('click', (e) => {
+            if (e.target.classList.contains('library-add')) return;
+            sendWs({ type: 'set_track', track_id: t.id });
+          });
+          ul.appendChild(li);
         });
-        li.addEventListener('click', (e) => {
-          if (e.target.classList.contains('library-add')) return;
-          sendWs({ type: 'set_track', track_id: t.id });
-        });
-        ul.appendChild(li);
+
+        folderBlock.appendChild(header);
+        folderBlock.appendChild(ul);
+        section.appendChild(folderBlock);
       });
-      section.appendChild(ul);
       el.libraryAllMedia.appendChild(section);
     });
+  }
+
+  function escapeHtml(s) {
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
   }
 
   function sendWs(obj) {
@@ -632,7 +685,7 @@
   }
 
   el.btnPlay.addEventListener('click', () => {
-    if (isPlaying) sendWs({ type: 'pause' });
+    if (isPlaying) sendWs({ type: 'pause', position_seconds: computedPositionSeconds() });
     else sendWs({ type: 'play' });
   });
   el.btnPrev.addEventListener('click', () => {

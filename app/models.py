@@ -1,10 +1,15 @@
 """SQLAlchemy models: LibraryRoot, Track, PlaylistOrder, PlaybackState."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+
+
+def _utc_now() -> datetime:
+    """Return current UTC time as naive datetime for DateTime(timezone=False) columns."""
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -21,7 +26,7 @@ class LibraryRoot(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     path: Mapped[str] = mapped_column(String(1024), unique=True, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=_utc_now)
 
     tracks: Mapped[list["Track"]] = relationship("Track", back_populates="library_root")
 
@@ -41,7 +46,7 @@ class Track(Base):
     artist: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     album: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     duration_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), default=_utc_now)
 
     library_root: Mapped[Optional["LibraryRoot"]] = relationship(
         "LibraryRoot", back_populates="tracks"
@@ -79,5 +84,5 @@ class PlaybackState(Base):
     is_playing: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     position_seconds: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=False), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=False), default=_utc_now, onupdate=_utc_now
     )

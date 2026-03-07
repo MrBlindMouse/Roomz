@@ -2,6 +2,7 @@
 
 import json
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import aiofiles
@@ -32,7 +33,24 @@ from app.ws_manager import manager
 configure_logging()
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Create data dirs, DB tables, and ensure single Player is ready (load from DB)."""
+    ensure_dirs()
+    await init_db()
+    player = getattr(app.state, "player", None)
+    if player is None:
+        player = Player()
+        app.state.player = player
+    async with async_session_maker() as session:
+        await player.load_from_session(session)
+    logger.info("Roomz started")
+    yield
+    # shutdown: none for now
+
+
+app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -86,20 +104,6 @@ async def uncaught_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Internal server error"},
     )
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    """Create data dirs, DB tables, and ensure single Player is ready (load from DB)."""
-    ensure_dirs()
-    await init_db()
-    player = getattr(app.state, "player", None)
-    if player is None:
-        player = Player()
-        app.state.player = player
-    async with async_session_maker() as session:
-        await player.load_from_session(session)
-    logger.info("Roomz started")
 
 
 async def _resolve_track_path(track_id: int) -> tuple[Path, str]:
