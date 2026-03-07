@@ -61,6 +61,7 @@ class Player:
                     "type": "play",
                     "position": self._position_seconds,
                     "server_timestamp": ts,
+                    "play_at_server_utc": ts,
                     "track_id": self._current_track_id,
                     "is_playing": True,
                 }
@@ -107,6 +108,7 @@ class Player:
                     "type": "set_track",
                     "position": 0,
                     "server_timestamp": ts,
+                    "play_at_server_utc": ts,
                     "track_id": track_id,
                     "is_playing": True,
                 }

@@ -1,5 +1,6 @@
 """FastAPI app: API, WebSocket, /music Range serving, SPA static files."""
 
+import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
@@ -26,12 +27,30 @@ from app.crud import (
 from app.player import Player
 from app.config import LIBRARY_BASE
 from app.crud import list_library_roots
-from app.db import ensure_dirs, init_db, async_session_maker
+from app.db import ensure_dirs, init_db, async_session_maker, _session_maker_for_request
 from app.routers.api import router as api_router
 from app.ws_manager import manager
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+async def _sync_tick_loop(app: FastAPI) -> None:
+    """Every 5 seconds broadcast current track and position to all connected clients."""
+    while True:
+        await asyncio.sleep(5)
+        player = getattr(app.state, "player", None)
+        if player is None:
+            continue
+        state = player.get_state_for_snapshot()
+        ts = server_timestamp_utc()
+        await manager.broadcast({
+            "type": "sync_tick",
+            "current_track_id": state.get("current_track_id"),
+            "position_seconds": state.get("position_seconds", 0),
+            "is_playing": state.get("is_playing", False),
+            "server_timestamp": ts,
+        })
 
 
 @asynccontextmanager
@@ -43,11 +62,18 @@ async def lifespan(app: FastAPI):
     if player is None:
         player = Player()
         app.state.player = player
-    async with async_session_maker() as session:
+    async with _session_maker_for_request()() as session:
         await player.load_from_session(session)
     logger.info("Roomz started")
-    yield
-    # shutdown: none for now
+    sync_task = asyncio.create_task(_sync_tick_loop(app))
+    try:
+        yield
+    finally:
+        sync_task.cancel()
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio", lifespan=lifespan)
@@ -57,7 +83,7 @@ app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio",
 async def health() -> JSONResponse:
     """Readiness/liveness: 200 if app and DB are up, 503 if DB unreachable."""
     try:
-        async with async_session_maker() as session:
+        async with _session_maker_for_request()() as session:
             await session.execute(text("SELECT 1"))
     except Exception:
         return JSONResponse(
@@ -108,7 +134,7 @@ async def uncaught_exception_handler(request: Request, exc: Exception):
 
 async def _resolve_track_path(track_id: int) -> tuple[Path, str]:
     """Resolve track by id; validate filepath under a library root or LIBRARY_BASE. Return (path, filename)."""
-    async with async_session_maker() as session:
+    async with _session_maker_for_request()() as session:
         track = await get_track_by_id(session, track_id)
         if track is None:
             raise HTTPException(status_code=404, detail="Track not found")
@@ -210,7 +236,7 @@ async def _build_state_snapshot() -> dict:
     """Build state_snapshot from single Player (playback state) + DB (playlist, filename)."""
     player = _get_player()
     state = player.get_state_for_snapshot()
-    async with async_session_maker() as session:
+    async with _session_maker_for_request()() as session:
         playlist = await get_playlist_item_dicts(session)
         order = await get_ordered_track_ids(session)
         current_track_filename = None
@@ -267,7 +293,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
             # Playback: single Player applies command, then we commit and broadcast
             if typ in ("play", "pause", "seek", "set_track"):
-                async with async_session_maker() as session:
+                async with _session_maker_for_request()() as session:
                     try:
                         payload = await _get_player().apply_command(
                             session,
@@ -283,7 +309,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                         await session.rollback()
                 continue
             # Playlist updates need DB + broadcast
-            async with async_session_maker() as session:
+            async with _session_maker_for_request()() as session:
                 try:
                     if typ == "playlist_reorder":
                         order = msg.get("order")

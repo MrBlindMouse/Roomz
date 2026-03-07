@@ -1,6 +1,6 @@
 /**
  * Roomz — LAN-synchronized single-stream audio client.
- * WebSocket state sync, clock sync, Web Audio playback, playlist, chat.
+ * WebSocket state sync, clock sync, <audio> playback (Range streaming), playlist, chat.
  */
 (function () {
   'use strict';
@@ -28,16 +28,10 @@
   let chatPanelOpen = false;
   let scanInProgress = false;
 
-  let audioContext = null;
-  let currentBuffer = null;
-  let currentBufferTrackId = null; // track_id that currentBuffer belongs to
-  let currentSource = null;
-  let startedAt = 0;
-  let bufferOffset = 0;
-  let audioFallback = null;
-  let useFallback = false;
-  let fallbackCorrectionInterval = null;
-  let gainNode = null;
+  const playbackAudio = new Audio();
+  let playbackTrackId = null; // track_id currently loaded in playbackAudio (from src)
+  let driftCorrectionInterval = null;
+  let lastPlayAtServerUtc = null;
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -146,19 +140,17 @@
 
   function updateNowPlayingUI() {
     const track = getCurrentTrack();
+    const pos = displayPositionSeconds();
     if (track) {
       el.nowTitle.textContent = track.title || track.filename || '—';
       el.nowArtist.textContent = track.artist || '—';
       const dur = track.duration_seconds;
-      el.remainingTime.textContent = Number.isFinite(dur) ? formatTime(dur - positionSeconds) : '—';
+      el.remainingTime.textContent = Number.isFinite(dur) ? formatTime(dur - pos) : '—';
     } else {
       el.nowTitle.textContent = '—';
       el.nowArtist.textContent = '—';
       el.remainingTime.textContent = '0:00';
     }
-    let pos = computedPositionSeconds();
-    if (useFallback && audioFallback) pos = audioFallback.currentTime;
-    else if (currentSource && audioContext && startedAt > 0) pos = bufferOffset + (audioContext.currentTime - startedAt);
     el.progressTime.textContent = formatTime(pos);
     const track2 = getCurrentTrack();
     const max = track2 && Number.isFinite(track2.duration_seconds) ? track2.duration_seconds : 100;
@@ -166,6 +158,14 @@
     el.seekBar.value = Math.min(pos, max);
     el.btnPlay.textContent = isPlaying ? '⏸' : '▶';
     el.btnPlay.classList.toggle('is-playing', isPlaying);
+  }
+
+  /** Position to show in UI: from audio when playing and loaded, else server-derived. */
+  function displayPositionSeconds() {
+    if (playbackTrackId === currentTrackId && playbackAudio.src) {
+      return playbackAudio.currentTime;
+    }
+    return computedPositionSeconds();
   }
 
   function renderPlaylist() {
@@ -475,11 +475,22 @@
       clockOffsetMs = serverUtc * 1000 - (clientTime + rtt / 2);
       return;
     }
+    if (typ === 'sync_tick') {
+      positionSeconds = msg.position_seconds ?? positionSeconds;
+      lastUpdateServerTimestamp = msg.server_timestamp ?? lastUpdateServerTimestamp;
+      currentTrackId = msg.current_track_id ?? currentTrackId;
+      isPlaying = msg.is_playing ?? isPlaying;
+      const drift = Math.abs(computedPositionSeconds() - (msg.position_seconds ?? 0));
+      if (isPlaying && drift > 0.25) applyPlaybackState();
+      updateNowPlayingUI();
+      return;
+    }
     if (typ === 'play' || typ === 'pause' || typ === 'seek' || typ === 'set_track') {
       positionSeconds = msg.position ?? 0;
       lastUpdateServerTimestamp = msg.server_timestamp ?? 0;
       currentTrackId = msg.track_id ?? currentTrackId;
       isPlaying = msg.is_playing ?? (typ === 'play' || typ === 'set_track');
+      lastPlayAtServerUtc = msg.play_at_server_utc ?? null;
       applyPlaybackState();
       updateNowPlayingUI();
       return;
@@ -500,6 +511,16 @@
     }
   }
 
+  /** Catch-up offset when starting late (from lastPlayAtServerUtc). */
+  function catchUpStartOffset(basePosition) {
+    if (lastPlayAtServerUtc == null) return Math.max(0, basePosition);
+    const delaySec = delayCompensationMs / 1000;
+    const whenToStart = lastPlayAtServerUtc + delaySec;
+    const missed = clientNowSeconds() - whenToStart;
+    if (missed <= 0) return Math.max(0, basePosition);
+    return Math.max(0, basePosition + missed);
+  }
+
   function applyPlaybackState() {
     const pos = Math.max(0, computedPositionSeconds());
     const track = getCurrentTrack();
@@ -507,65 +528,43 @@
       stopPlayback();
       return;
     }
-    if (useFallback) {
-      if (audioFallback) {
-        audioFallback.currentTime = pos;
-        if (isPlaying) audioFallback.play().catch(() => {});
-        else audioFallback.pause();
-      } else {
-        startFallbackAudio(track.track_id, pos);
-      }
+    const startOffset = catchUpStartOffset(pos);
+    if (playbackTrackId !== track.track_id) {
+      playbackTrackId = track.track_id;
+      const trackObj = getCurrentTrack();
+      currentTrackFilename = trackObj ? trackObj.filename : null;
+      playbackAudio.src = `${API_BASE}/music/track/${track.track_id}`;
+      playbackAudio.volume = el.volumeSlider ? el.volumeSlider.value / 100 : 1;
+      const onCanPlay = () => {
+        playbackAudio.removeEventListener('canplay', onCanPlay);
+        if (playbackTrackId !== currentTrackId) return;
+        playbackAudio.currentTime = startOffset;
+        lastPlayAtServerUtc = null;
+        if (isPlaying) playbackAudio.play().catch(() => {});
+        updateNowPlayingUI();
+      };
+      playbackAudio.addEventListener('canplay', onCanPlay);
+      startDriftCorrection();
       return;
     }
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-      gainNode = audioContext.createGain();
-      gainNode.connect(audioContext.destination);
-      gainNode.gain.value = el.volumeSlider.value / 100;
-      window._roomzGainNode = gainNode;
-    }
-    if (currentBufferTrackId === track.track_id && currentBuffer) {
-      if (isPlaying) {
-        const duration = (currentBuffer.duration || 0) - pos;
-        if (duration > 0) {
-          startSourceAt(audioContext.currentTime, pos, duration);
-        }
-      } else {
-        stopSource();
-        positionSeconds = pos;
-        lastUpdateServerTimestamp = clientNowSeconds();
-      }
-    } else {
-      loadAndPlayTrack(track.track_id, pos, isPlaying);
-    }
+    playbackAudio.currentTime = startOffset;
+    lastPlayAtServerUtc = null;
+    if (isPlaying) playbackAudio.play().catch(() => {});
+    else playbackAudio.pause();
+    updateNowPlayingUI();
   }
 
-  function startSourceAt(when, offset, duration) {
-    stopSource();
-    const source = audioContext.createBufferSource();
-    source.buffer = currentBuffer;
-    source.connect(gainNode || audioContext.destination);
-    source.start(when, offset, duration);
-    currentSource = source;
-    startedAt = when;
-    bufferOffset = offset;
-    source.onended = () => {
-      if (!currentSource) return;
-      currentSource = null;
-      const elapsed = audioContext.currentTime - startedAt;
-      const newPos = bufferOffset + elapsed;
-      if (repeatMode === 1) {
-        sendWs({ type: 'seek', position_seconds: 0 });
-        sendWs({ type: 'play' });
-      } else if (repeatMode === 2 || (playlist.length && getNextTrack())) {
-        const next = getNextTrack();
-        if (next) sendWs({ type: 'set_track', track_id: next.track_id });
-        else sendWs({ type: 'seek', position_seconds: 0 });
-      } else {
-        sendWs({ type: 'pause' });
-        sendWs({ type: 'seek', position_seconds: 0 });
-      }
-    };
+  function startDriftCorrection() {
+    if (driftCorrectionInterval) return;
+    const threshold = 0.4;
+    driftCorrectionInterval = setInterval(() => {
+      if (!playbackAudio.src || playbackTrackId !== currentTrackId) return;
+      if (!isPlaying) return;
+      const expected = computedPositionSeconds();
+      const drift = Math.abs(playbackAudio.currentTime - expected);
+      if (drift > threshold) playbackAudio.currentTime = expected;
+      updateNowPlayingUI();
+    }, 500);
   }
 
   function getNextTrack() {
@@ -582,64 +581,24 @@
     return playlist[prevIdx] || null;
   }
 
-  function stopSource() {
-    if (currentSource) {
-      try {
-        currentSource.stop();
-      } catch (_) {}
-      currentSource = null;
-    }
-  }
-
   function stopPlayback() {
-    stopSource();
-    if (audioFallback) {
-      audioFallback.pause();
-      audioFallback.src = '';
-    }
+    playbackAudio.pause();
+    playbackAudio.removeAttribute('src');
+    playbackAudio.load();
+    playbackTrackId = null;
   }
 
-  async function loadAndPlayTrack(trackId, offset, play) {
-    stopSource();
-    const url = `${API_BASE}/music/track/${trackId}`;
-    try {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(res.statusText);
-      const buf = await res.arrayBuffer();
-      currentBuffer = await audioContext.decodeAudioData(buf);
-      currentBufferTrackId = trackId;
-      const track = getCurrentTrack();
-      currentTrackFilename = track ? track.filename : null;
-      const duration = currentBuffer.duration - offset;
-      if (play && duration > 0) {
-        startSourceAt(audioContext.currentTime, offset, duration);
-      } else {
-        positionSeconds = offset;
-        lastUpdateServerTimestamp = clientNowSeconds();
-      }
-    } catch (e) {
-      reportError('Web Audio failed, using fallback', e);
-      useFallback = true;
-      if (!audioFallback) audioFallback = new Audio();
-      startFallbackAudio(trackId, offset);
-      if (isPlaying) audioFallback.play().catch(() => {});
-    }
-    updateNowPlayingUI();
-  }
-
-  function startFallbackAudio(trackId, offset) {
-    if (!audioFallback) audioFallback = new Audio();
-    audioFallback.src = `${API_BASE}/music/track/${trackId}`;
-    audioFallback.currentTime = offset;
-    if (isPlaying) audioFallback.play().catch(() => {});
-    if (!fallbackCorrectionInterval) {
-      fallbackCorrectionInterval = setInterval(() => {
-        if (!audioFallback || !currentTrackId) return;
-        const expected = computedPositionSeconds();
-        const drift = Math.abs(audioFallback.currentTime - expected);
-        if (drift > 0.5) audioFallback.currentTime = expected;
-        updateNowPlayingUI();
-      }, 500);
+  function onPlaybackEnded() {
+    if (repeatMode === 1) {
+      sendWs({ type: 'seek', position_seconds: 0 });
+      sendWs({ type: 'play' });
+    } else if (repeatMode === 2 || (playlist.length && getNextTrack())) {
+      const next = getNextTrack();
+      if (next) sendWs({ type: 'set_track', track_id: next.track_id });
+      else sendWs({ type: 'seek', position_seconds: 0 });
+    } else {
+      sendWs({ type: 'pause' });
+      sendWs({ type: 'seek', position_seconds: 0 });
     }
   }
 
@@ -712,13 +671,17 @@
   });
   el.volumeSlider.addEventListener('input', () => {
     const v = el.volumeSlider.value / 100;
-    if (audioFallback) audioFallback.volume = v;
-    if (gainNode) gainNode.gain.value = v;
+    playbackAudio.volume = v;
   });
   el.delaySlider.addEventListener('input', () => {
     delayCompensationMs = parseInt(el.delaySlider.value, 10);
     el.delayValue.textContent = delayCompensationMs;
   });
+  if (el.delaySlider && el.delayValue) {
+    delayCompensationMs = parseInt(el.delaySlider.value, 10);
+    el.delayValue.textContent = delayCompensationMs;
+  }
+  if (el.volumeSlider) playbackAudio.volume = el.volumeSlider.value / 100;
 
   el.btnAddLibrary.addEventListener('click', async () => {
     const path = el.libraryPath.value.trim();
@@ -807,6 +770,8 @@
   el.chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') el.chatSend.click();
   });
+
+  playbackAudio.addEventListener('ended', onPlaybackEnded);
 
   connectWs();
   fetchLibraryRoots();

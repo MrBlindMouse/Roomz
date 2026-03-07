@@ -5,6 +5,7 @@ Ensures data/ and data/music/ exist on startup.
 
 import logging
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -43,10 +44,22 @@ async_session_maker = async_sessionmaker(
     autoflush=False,
 )
 
+# Test overrides: when set by tests, init_db and get_db use these instead (same process, any thread).
+_test_engine = None
+_test_session_maker = None
+
+
+def _engine_for_init() -> Any:
+    return _test_engine if _test_engine is not None else engine
+
+
+def _session_maker_for_request():
+    return _test_session_maker if _test_session_maker is not None else async_session_maker
+
 
 async def get_db() -> AsyncSession:
     """Dependency that yields an async session. Used by request-scoped API routes (commit on success, rollback on exception). WebSocket handler in main.py uses async_session_maker() per message for explicit commit boundaries."""
-    async with async_session_maker() as session:
+    async with _session_maker_for_request()() as session:
         try:
             yield session
             await session.commit()
@@ -61,8 +74,9 @@ async def get_db() -> AsyncSession:
 async def init_db() -> None:
     """Create tables if they do not exist. Call on app startup. Enables WAL for better concurrent read/write."""
     ensure_dirs()
-    async with engine.begin() as conn:
+    e = _engine_for_init()
+    async with e.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     # WAL mode allows one writer and multiple readers; reduces lock contention during scan vs other requests.
-    async with engine.connect() as conn:
+    async with e.connect() as conn:
         await conn.execute(text("PRAGMA journal_mode=WAL"))
