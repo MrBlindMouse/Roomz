@@ -12,6 +12,24 @@ from app.crud import get_or_create_playback_state, set_playback_state
 logger = logging.getLogger(__name__)
 
 
+def compute_sync_tick_broadcast_position_seconds(state: dict[str, Any], ts: float) -> float:
+    """Wall-clock playback position at ``ts`` for ``sync_tick`` broadcasts.
+
+    While playing, :meth:`Player.get_state_for_snapshot` holds a stale
+    ``position_seconds`` (last command only). Extrapolate with
+    ``last_update_server_timestamp`` so clients can pair position with
+    ``server_timestamp`` without collapsing extrapolated time.
+    When paused, return the frozen position.
+    """
+    pos = max(0.0, float(state.get("position_seconds") or 0.0))
+    if not state.get("is_playing"):
+        return pos
+    last_ts = float(state.get("last_update_server_timestamp") or 0.0)
+    if last_ts <= 0.0:
+        last_ts = ts
+    return max(0.0, pos + (ts - last_ts))
+
+
 class Player:
     """Single in-process owner of playback state. Persists via CRUD; returns state dict for broadcast."""
 

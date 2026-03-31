@@ -16,8 +16,8 @@ Roomz is a **single-global-stream**, LAN-synchronized audio player. One FastAPI 
 
 ## Key modules
 
-- `app/main.py` — FastAPI app, `GET /health` (readiness/liveness), `GET /music/track/{track_id}` (Range), `WebSocket /ws`, static mount for SPA.
-- `app/player.py` — Single Player instance: in-memory playback state, `apply_command(play|pause|seek|set_track)`, persists via CRUD.
+- `app/main.py` — FastAPI app, `GET /health` (readiness/liveness), `GET /music/track/{track_id}` (Range), `WebSocket /ws`, static mount for SPA; background `sync_tick` every 5s broadcasts extrapolated position while playing.
+- `app/player.py` — Single Player instance: in-memory playback state, `apply_command(play|pause|seek|set_track)`, persists via CRUD; `compute_sync_tick_broadcast_position_seconds` for valid `sync_tick` anchors.
 - `app/config.py` — `LIBRARY_BASE`, `validate_library_path()` for allowed roots.
 - `app/ws_manager.py` — Global `ConnectionManager`: connect, disconnect, broadcast.
 - `app/clock_sync.py` — Server timestamp for client offset calculation (no server state).

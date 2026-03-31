@@ -24,7 +24,7 @@ from app.crud import (
     remove_track_from_playlist,
     set_playlist_order,
 )
-from app.player import Player
+from app.player import Player, compute_sync_tick_broadcast_position_seconds
 from app.config import LIBRARY_BASE
 from app.crud import list_library_roots
 from app.db import ensure_dirs, init_db, async_session_maker, _session_maker_for_request
@@ -44,10 +44,11 @@ async def _sync_tick_loop(app: FastAPI) -> None:
             continue
         state = player.get_state_for_snapshot()
         ts = server_timestamp_utc()
+        broadcast_pos = compute_sync_tick_broadcast_position_seconds(state, ts)
         await manager.broadcast({
             "type": "sync_tick",
             "current_track_id": state.get("current_track_id"),
-            "position_seconds": state.get("position_seconds", 0),
+            "position_seconds": broadcast_pos,
             "is_playing": state.get("is_playing", False),
             "server_timestamp": ts,
         })

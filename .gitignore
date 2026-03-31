@@ -16,7 +16,7 @@ build/
 # Data (user content + local DB)
 data/music/*
 !data/music/.gitkeep
-data/app.db
+data/*
 
 # Environment
 .env
