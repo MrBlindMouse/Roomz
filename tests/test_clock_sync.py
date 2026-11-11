@@ -1,10 +1,8 @@
-"""Unit tests for clock_sync: server_timestamp_utc."""
+"""Unit tests for server_timestamp_utc."""
 
 import time
 
-import pytest
-
-from app.clock_sync import server_timestamp_utc
+from app.config import server_timestamp_utc
 
 
 def test_server_timestamp_utc_returns_float() -> None:

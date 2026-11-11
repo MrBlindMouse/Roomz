@@ -72,8 +72,7 @@
     background: var(--color-amber-hover);
   }
 
-  .input,
-  .select {
+  .input {
     padding: 0.5rem 0.75rem;
     border-radius: 0.5rem;
     font-size: 0.875rem;
@@ -82,8 +81,7 @@
     color: var(--color-ink);
   }
 
-  .input:focus,
-  .select:focus {
+  .input:focus {
     outline: none;
     box-shadow: 0 0 0 1px var(--color-ink-accent);
   }
@@ -92,9 +90,6 @@
     color: var(--color-ink-subtle);
   }
 
-  .input--path { width: 12rem; max-width: 100%; }
-  .input--name { width: 7rem; }
-  .select--upload-root { max-width: 8rem; }
   .chat-form .input { flex: 1; min-width: 0; }
 
   .label {
@@ -118,21 +113,6 @@
     margin-bottom: 0.5rem;
   }
 
-  .library-roots-list {
-    border-radius: 0.5rem;
-    border: 1px solid var(--color-border);
-    margin-bottom: 0.5rem;
-    max-height: 8rem;
-    overflow: auto;
-  }
-
-  .library-form-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: flex-end;
-  }
-
   .library-actions {
     display: flex;
     flex-wrap: wrap;
@@ -147,6 +127,12 @@
     min-height: 0;
   }
 
+  .library-base {
+    font-size: 0.875rem;
+    color: var(--color-ink-muted);
+    margin-top: 0.25rem;
+  }
+
   .library-error {
     font-size: 0.875rem;
     color: var(--color-canvas-negative);
@@ -154,8 +140,7 @@
   }
 
   .playlist,
-  .library-roots-list,
-  .library-section .list {
+  .library-folder-list {
     list-style: none;
     margin-left: 0;
   }
@@ -197,6 +182,10 @@
     background: color-mix(in oklab, var(--color-amber) 25%, transparent);
   }
 
+  .playlist-item.is-current {
+    background: color-mix(in oklab, var(--color-amber) 12%, transparent);
+  }
+
   .playlist-item .num {
     width: 1.5rem;
     flex-shrink: 0;
@@ -215,12 +204,6 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .playlist-item .playlist-item-folder {
-    color: var(--color-ink-subtle);
-    font-size: 0.75rem;
-    font-weight: 400;
   }
 
   .playlist-item .dur {
@@ -255,18 +238,6 @@
 
   #volume-slider { width: 8rem; }
   #delay-slider { width: 6rem; }
-
-  .library-section {
-    margin-bottom: 0.75rem;
-  }
-
-  .library-section .heading {
-    font-size: 0.75rem;
-    font-weight: 500;
-    color: var(--color-ink-subtle);
-    padding: 0.25rem 0.5rem;
-    border-bottom: 1px solid var(--color-border);
-  }
 
   .library-folder {
     margin-top: 0.125rem;
@@ -310,11 +281,7 @@
     display: none;
   }
 
-  .library-section .list {
-    border-top: 1px solid color-mix(in oklab, var(--color-border) 50%, transparent);
-  }
-
-  .library-section .item {
+  .library-folder-list .item {
     display: flex;
     align-items: center;
     gap: 0.5rem;
@@ -323,11 +290,11 @@
     cursor: pointer;
   }
 
-  .library-section .item:hover {
+  .library-folder-list .item:hover {
     background: color-mix(in oklab, var(--color-border) 30%, transparent);
   }
 
-  .library-section .item-title {
+  .library-folder-list .item-title {
     flex: 1;
     min-width: 0;
     white-space: nowrap;
@@ -335,12 +302,12 @@
     text-overflow: ellipsis;
   }
 
-  .library-section .item-dur {
+  .library-folder-list .item-dur {
     color: var(--color-ink-subtle);
     flex-shrink: 0;
   }
 
-  .library-section .item .library-add {
+  .library-folder-list .library-add {
     padding: 0.125rem 0.5rem;
     border-radius: 0.25rem;
     font-size: 0.75rem;
@@ -348,59 +315,8 @@
     color: var(--color-ink);
   }
 
-  .library-section .item .library-add:hover {
+  .library-folder-list .library-add:hover {
     background: var(--color-ink-subtle);
-  }
-
-  .library-root-item {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.5rem;
-    padding: 0.5rem;
-  }
-
-  .library-root-item:hover {
-    background: color-mix(in oklab, var(--color-border) 30%, transparent);
-  }
-
-  .library-root-item .name {
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-size: 0.875rem;
-  }
-
-  .library-root-item .actions {
-    display: flex;
-    gap: 0.25rem;
-    flex-shrink: 0;
-  }
-
-  .library-root-item .scan-root,
-  .library-root-item .remove-root {
-    padding: 0.25rem 0.5rem;
-    border-radius: 0.25rem;
-    font-size: 0.75rem;
-  }
-
-  .library-root-item .scan-root {
-    background: var(--color-border);
-    color: var(--color-ink);
-  }
-
-  .library-root-item .scan-root:hover {
-    background: var(--color-ink-subtle);
-  }
-
-  .library-root-item .remove-root {
-    background: color-mix(in oklab, oklch(0.55 0.2 25) 40%, var(--color-canvas));
-    color: var(--color-ink);
-  }
-
-  .library-root-item .remove-root:hover {
-    background: color-mix(in oklab, oklch(0.55 0.2 25) 60%, var(--color-canvas));
   }
 
   .chat-messages {

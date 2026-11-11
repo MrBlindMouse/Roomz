@@ -34,26 +34,14 @@
   <main class="main">
     <aside id="panel-library" class="panel panel--library is-hidden">
       <div class="section">
-        <h2 class="heading">Library folders</h2>
-        <ul id="library-roots" class="library-roots-list"></ul>
-        <div class="library-form-row">
-          <div>
-            <label class="label" for="library-path">Path</label>
-            <input type="text" id="library-path" class="input input--path" placeholder="/path/to/music" />
-          </div>
-          <div>
-            <label class="label" for="library-name">Name (optional)</label>
-            <input type="text" id="library-name" class="input input--name" placeholder="My Music" />
-          </div>
-          <button type="button" id="btn-add-library" class="btn">Add folder</button>
-        </div>
+        <h2 class="heading">Library</h2>
+        <p id="library-base" class="library-base"></p>
         <p id="library-error" class="library-error is-hidden"></p>
       </div>
       <div class="section library-actions">
         <input type="file" id="file-input" accept="audio/*" class="input--hidden" multiple />
-        <select id="upload-root" class="select select--upload-root"></select>
         <button type="button" id="btn-upload" class="btn">Upload</button>
-        <button type="button" id="btn-scan" class="btn">Scan all</button>
+        <button type="button" id="btn-scan" class="btn">Scan</button>
       </div>
       <div class="section section--grow">
         <h2 class="heading">All media</h2>

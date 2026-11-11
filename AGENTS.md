@@ -2,56 +2,59 @@
 
 ## What this project is
 
-Roomz is a **single-global-stream**, LAN-synchronized audio player. One FastAPI server streams one audio feed to many browser clients; all play the same track at the same position with sub-10 ms sync on LAN.
+Roomz is a **single-global-stream**, LAN-synchronized audio player. MPD decodes one timeline. Roomz reads that PCM FIFO, stamps each frame, and every browser plays the same frames.
 
-- **No rooms or codes**: one playlist, one playback state for the whole LAN.
-- **Server is authoritative**: a single in-process **Player** owns playback state (track, position, playing); it persists to SQLite and state is broadcast over WebSocket.
-- **Clients sync via NTP-style clock sync** and apply per-device delay (0–500 ms) for speaker placement.
+- **No rooms or codes**: one queue, one stream for the whole LAN.
+- **MPD is the player**: play, pause, seek, queue, and the library index live in MPD. Roomz does not keep a second playlist.
+- **Clients only shift delay**: NTP-style clock sync plus the frame timestamps schedule playback. Each browser adds its own delay (−250..250 ms), stored locally. Volume is local too.
+
+Browser output delay past `AudioContext.outputLatency` is what the slider is for. A hidden tab is not a speaker.
 
 ## Stack
 
-- **Backend**: FastAPI, Uvicorn, SQLAlchemy 2.0 (async, aiosqlite), Alembic, SQLite at `data/app.db`. Dependencies managed with **uv** (`pyproject.toml`, `uv.lock`). No Docker.
-- **Frontend**: Vanilla HTML/CSS/JS, single SPA at `/` (StaticFiles with `html=True`). CSS and JS live in `frontend/static/`; layered vanilla CSS (reset, base, colors, layout, components); no Tailwind. Web Audio API for playback; &lt;audio&gt; fallback with 500 ms position correction.
-- **Audio**: Multiple user-chosen library folders (under `ROOMZ_LIBRARY_BASE` or `data/`). Metadata via mutagen. Serving via `GET /music/track/{track_id}` with Range/ETag. Scan is recursive.
+- **Backend**: FastAPI, Uvicorn. Dependencies managed with **uv** (`pyproject.toml`, `uv.lock`). No Docker. MPD is a separate process (see `mpd/mpd.conf`); Roomz does not start it.
+- **Frontend**: Vanilla HTML/CSS/JS, single SPA at `/` (StaticFiles with `html=True`). CSS and JS live in `frontend/static/`; layered vanilla CSS (reset, base, colors, layout, components); no Tailwind. Web Audio API schedules the PCM frames.
+- **Audio**: One music directory (`ROOMZ_LIBRARY_BASE`, default `data/`). MPD indexes it. PCM is 44100 Hz, 16-bit stereo, ~20 ms frames, over the WebSocket.
 
 ## Key modules
 
-- `app/main.py` — FastAPI app, `GET /health` (readiness/liveness), `GET /music/track/{track_id}` (Range), `WebSocket /ws`, static mount for SPA; background `sync_tick` every 5s broadcasts extrapolated position while playing.
-- `app/player.py` — Single Player instance: in-memory playback state, `apply_command(play|pause|seek|set_track)`, persists via CRUD; `compute_sync_tick_broadcast_position_seconds` for valid `sync_tick` anchors.
-- `app/config.py` — `LIBRARY_BASE`, `validate_library_path()` for allowed roots.
-- `app/ws_manager.py` — Global `ConnectionManager`: connect, disconnect, broadcast.
-- `app/clock_sync.py` — Server timestamp for client offset calculation (no server state).
-- `app/routers/api.py` — `GET/POST/DELETE /api/library-roots`, `POST /api/upload?root_id=`, `POST /api/scan?root_id=`, playlist.
-- `app/crud.py` — Library roots, tracks (with `library_root_id`, `filepath`), playlist, playback state.
-- `app/models.py` — LibraryRoot, Track, PlaylistOrder, PlaybackState.
-- `app/schemas.py` — Pydantic schemas for REST API (library roots, tracks, playlist, playback state).
-- `app/audio_utils.py` — Mutagen metadata extraction (async-safe).
-- `app/logging_config.py` — Centralized logging: `configure_logging()` from env `LOG_LEVEL` (default INFO), `LOG_FORMAT` (text | json).
+- `app/main.py` — FastAPI app, `GET /health` (MPD greeting and FIFO), `WebSocket /ws` (JSON control + binary PCM), static mount.
+- `app/mpd_client.py` — Async MPD text protocol: commands on one socket, `idle` on another.
+- `app/stream.py` — FIFO reader, frame size, timestamp packing.
+- `app/config.py` — Music directory, MPD host/port, FIFO path, `server_timestamp_utc()`.
+- `app/ws_manager.py` — Global `ConnectionManager`: text and binary broadcast.
+- `app/mpd_access.py` — Shared `app.state.mpd` lookup for HTTP and WebSocket.
+- `app/routers/api.py` — `GET /api/library`, `POST /api/upload`, `POST /api/scan`.
+- `app/schemas.py` — Pydantic schemas for the library API.
+- `app/logging_config.py` — `configure_logging()` from env `LOG_LEVEL` (default INFO), `LOG_FORMAT` (text | json).
+- `frontend/static/app.js` — AudioContext scheduler, delay slider, transport.
 
 ## Conventions
 
 - Prefer simplicity and long-term maintainability. Self-documenting code, type hints, docstrings. Black/ruff.
 - Async everywhere; no blocking calls. Defensive error handling and centralized logging (env: `LOG_LEVEL`, `LOG_FORMAT`).
-- Library paths must be under `LIBRARY_BASE` (env `ROOMZ_LIBRARY_BASE` or `data/`). Validate upload types (audio allowlist).
+- Uploads go into the music directory. Validate upload types (audio allowlist). The FIFO path and the music directory must match `mpd/mpd.conf`.
 - No auth (LAN-only). Upload rate limit in API.
 - **CORS**: Same-origin only; no CORSMiddleware. If the frontend is served from another origin (e.g. dev server), add explicit CORS in `app/main.py`.
 
 ## Running
+
+Install MPD, edit the absolute paths in `mpd/mpd.conf`, create the playlist directory, and start MPD. Then:
 
 ```bash
 uv sync
 uv run python run.py
 ```
 
-Or run uvicorn directly (app will create the Player on startup):
+Or:
 
 ```bash
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Testing
+`/health` is 503 until MPD is accepting connections and the FIFO exists.
 
-Tests use in-memory SQLite (see `tests/conftest.py`). Run:
+## Testing
 
 ```bash
 uv sync --extra dev
@@ -59,4 +62,4 @@ uv run pytest tests/ -v
 uv run pytest tests/ --cov=app --cov-report=term-missing   # with coverage
 ```
 
-Coverage is configured in `pyproject.toml` (`[tool.coverage.run]`, `[tool.coverage.report]`); minimum threshold is enforced (fail_under).
+Coverage is configured in `pyproject.toml` (`[tool.coverage.run]`, `[tool.coverage.report]`); minimum threshold is enforced (fail_under). Tests do not need a running MPD.

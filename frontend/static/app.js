@@ -1,37 +1,56 @@
 /**
- * Roomz — LAN-synchronized single-stream audio client.
- * WebSocket state sync, clock sync, <audio> playback (Range streaming), playlist, chat.
+ * Roomz client. One PCM stream from the server; this page only shifts playout.
+ * MPD owns the queue. The seek bar shows MPD's elapsed time and never drives audio.
+ *
+ * ponytail: browser output delay past AudioContext.outputLatency is what the
+ * speaker slider is for. A hidden tab is not a speaker. Upgrade path: a native client.
  */
 (function () {
   'use strict';
 
   const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`;
   const API_BASE = '';
+  const DELAY_KEY = 'roomz.delayMs';
+  const BASE_BUFFER_SEC = 0.3;
+  const LOOKAHEAD_SEC = 0.15;
+  const SYNC_SAMPLES = 5;
+  const SYNC_GAP_MS = 40;
 
   let ws = null;
   let reconnectTimer = null;
   let syncInterval = null;
+  let scheduleTimer = null;
 
   let clockOffsetMs = 0;
+  let clockReady = false;
+  let burstBestRtt = Infinity;
   let delayCompensationMs = 0;
 
   let playlist = [];
-  let currentTrackId = null;
-  let currentTrackFilename = null;
-  let isPlaying = false;
-  let positionSeconds = 0;
-  let lastUpdateServerTimestamp = 0;
-  let repeatMode = 0; // 0 off, 1 one, 2 all
-  let shuffle = false;
-  let libraryRoots = [];
+  let songId = null;
+  let title = '';
+  let artist = '';
+  let playbackState = 'stop';
+  let elapsed = 0;
+  let duration = 0;
+  let statusServerTs = 0;
+  let repeatMode = 0;
+  let randomOn = false;
+  let seekHold = false;
+
+  let streamRate = 44100;
+  let streamChannels = 2;
+  let frameSamples = 882;
+
+  let audioCtx = null;
+  let gain = null;
+  let pending = [];
+  let scheduled = [];
+  let lastServerTs = null;
+
   let libraryPanelOpen = false;
   let chatPanelOpen = false;
   let scanInProgress = false;
-
-  const playbackAudio = new Audio();
-  let playbackTrackId = null; // track_id currently loaded in playbackAudio (from src)
-  let driftCorrectionInterval = null;
-  let lastPlayAtServerUtc = null;
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -49,12 +68,8 @@
     btnShuffle: $('btn-shuffle'),
     btnRepeat: $('btn-repeat'),
     volumeSlider: $('volume-slider'),
-    libraryRoots: $('library-roots'),
-    libraryPath: $('library-path'),
-    libraryName: $('library-name'),
-    btnAddLibrary: $('btn-add-library'),
+    libraryBase: $('library-base'),
     libraryError: $('library-error'),
-    uploadRoot: $('upload-root'),
     fileInput: $('file-input'),
     btnUpload: $('btn-upload'),
     btnScan: $('btn-scan'),
@@ -71,12 +86,6 @@
     chatSend: $('chat-send'),
   };
 
-  /**
-   * Centralized error reporting: log to console and optionally show message in UI.
-   * @param {string} context - Short label for the error (e.g. "Fetch library roots").
-   * @param {Error|unknown} err - The error or response body.
-   * @param {string} [userMessage] - If set, shown in libraryError element (library panel).
-   */
   function reportError(context, err, userMessage) {
     console.error(context, err);
     if (userMessage != null && userMessage !== '' && el.libraryError) {
@@ -86,24 +95,14 @@
   }
 
   function hideLibraryError() {
-    if (el.libraryError) {
-      el.libraryError.classList.add('is-hidden');
-    }
+    if (el.libraryError) el.libraryError.classList.add('is-hidden');
   }
 
-  /**
-   * Set scan UI state: disable/enable all scan buttons and show "Scanning..." or normal label.
-   * @param {boolean} active - True while a scan request is in flight.
-   */
   function setScanning(active) {
     if (el.btnScan) {
       el.btnScan.disabled = active;
-      el.btnScan.textContent = active ? 'Scanning...' : 'Scan all';
+      el.btnScan.textContent = active ? 'Scanning...' : 'Scan';
     }
-    document.querySelectorAll('.scan-root').forEach((btn) => {
-      btn.disabled = active;
-      btn.textContent = active ? 'Scanning...' : 'Scan';
-    });
   }
 
   function clientNowMs() {
@@ -114,13 +113,12 @@
     return clientNowMs() / 1000;
   }
 
-  /** Compute local playback position from server state + clock + delay. When paused, return frozen position. */
-  function computedPositionSeconds() {
-    if (!isPlaying) return Math.max(0, positionSeconds);
-    const serverTs = lastUpdateServerTimestamp;
-    const now = clientNowSeconds();
-    const delaySec = delayCompensationMs / 1000;
-    return positionSeconds + (now - serverTs) + delaySec;
+  /** Seek-bar time. Extrapolated from the last MPD status, not from the audio clock. */
+  function displayElapsed() {
+    if (playbackState !== 'play' || !clockReady) return Math.max(0, elapsed);
+    const pos = elapsed + (clientNowSeconds() - statusServerTs);
+    if (duration > 0) return Math.min(Math.max(0, pos), duration);
+    return Math.max(0, pos);
   }
 
   function formatTime(s) {
@@ -130,42 +128,29 @@
     return `${m}:${sec.toString().padStart(2, '0')}`;
   }
 
-  function getTrackById(trackId) {
-    return playlist.find((p) => p.track_id === trackId);
-  }
-
-  function getCurrentTrack() {
-    return currentTrackId ? getTrackById(currentTrackId) : null;
+  function escapeHtml(s) {
+    const div = document.createElement('div');
+    div.textContent = s;
+    return div.innerHTML;
   }
 
   function updateNowPlayingUI() {
-    const track = getCurrentTrack();
-    const pos = displayPositionSeconds();
-    if (track) {
-      el.nowTitle.textContent = track.title || track.filename || '—';
-      el.nowArtist.textContent = track.artist || '—';
-      const dur = track.duration_seconds;
-      el.remainingTime.textContent = Number.isFinite(dur) ? formatTime(dur - pos) : '—';
-    } else {
-      el.nowTitle.textContent = '—';
-      el.nowArtist.textContent = '—';
-      el.remainingTime.textContent = '0:00';
-    }
+    const pos = displayElapsed();
+    el.nowTitle.textContent = title || '—';
+    el.nowArtist.textContent = artist || '—';
     el.progressTime.textContent = formatTime(pos);
-    const track2 = getCurrentTrack();
-    const max = track2 && Number.isFinite(track2.duration_seconds) ? track2.duration_seconds : 100;
-    el.seekBar.max = max;
-    el.seekBar.value = Math.min(pos, max);
-    el.btnPlay.textContent = isPlaying ? '⏸' : '▶';
-    el.btnPlay.classList.toggle('is-playing', isPlaying);
-  }
-
-  /** Position to show in UI: from audio when playing and loaded, else server-derived. */
-  function displayPositionSeconds() {
-    if (playbackTrackId === currentTrackId && playbackAudio.src) {
-      return playbackAudio.currentTime;
+    el.remainingTime.textContent = duration > 0 ? formatTime(duration - pos) : '—';
+    if (!seekHold && el.seekBar) {
+      el.seekBar.max = duration > 0 ? duration : 0;
+      el.seekBar.value = duration > 0 ? Math.min(pos, duration) : 0;
     }
-    return computedPositionSeconds();
+    el.btnPlay.textContent = playbackState === 'play' ? '⏸' : '▶';
+    el.btnPlay.classList.toggle('is-playing', playbackState === 'play');
+    if (el.btnShuffle) el.btnShuffle.classList.toggle('is-active', randomOn);
+    if (el.btnRepeat) {
+      el.btnRepeat.classList.toggle('is-active', repeatMode > 0);
+      el.btnRepeat.textContent = repeatMode === 1 ? '1' : repeatMode === 2 ? '∞' : '↻';
+    }
   }
 
   function renderPlaylist() {
@@ -173,27 +158,23 @@
     playlist.forEach((item) => {
       const li = document.createElement('li');
       li.className = 'playlist-item';
-      li.dataset.trackId = String(item.track_id);
+      if (item.id === songId) li.classList.add('is-current');
+      li.dataset.id = String(item.id);
       li.dataset.position = String(item.position);
       li.draggable = true;
-      const titlePart = escapeHtml(item.title || item.filename || '—');
-      const folderPart =
-        item.folder && item.folder !== '.'
-          ? ` <span class="playlist-item-folder">· ${escapeHtml(item.folder)}</span>`
-          : '';
       li.innerHTML = `
         <span class="num">${item.position + 1}</span>
-        <span class="playlist-item-title-wrap"><span class="title">${titlePart}</span>${folderPart}</span>
+        <span class="playlist-item-title-wrap"><span class="title">${escapeHtml(item.title || item.file || '—')}</span></span>
         <span class="dur">${formatTime(item.duration_seconds)}</span>
-        <button type="button" class="remove-track" data-track-id="${item.track_id}">✕</button>
+        <button type="button" class="remove-track" data-id="${item.id}">✕</button>
       `;
       li.querySelector('.remove-track').addEventListener('click', (e) => {
         e.stopPropagation();
-        sendWs({ type: 'playlist_remove', track_id: item.track_id });
+        sendWs({ type: 'playlist_remove', id: item.id });
       });
       li.addEventListener('click', (e) => {
         if (e.target.classList.contains('remove-track')) return;
-        sendWs({ type: 'set_track', track_id: item.track_id });
+        sendWs({ type: 'play_id', id: item.id });
       });
       setupDragDrop(li);
       el.playlist.appendChild(li);
@@ -203,7 +184,7 @@
   function setupDragDrop(li) {
     li.addEventListener('dragstart', (e) => {
       li.classList.add('dragging');
-      e.dataTransfer.setData('text/plain', li.dataset.trackId);
+      e.dataTransfer.setData('text/plain', li.dataset.id);
       e.dataTransfer.effectAllowed = 'move';
     });
     li.addEventListener('dragend', () => li.classList.remove('dragging'));
@@ -218,7 +199,7 @@
       li.classList.remove('drag-over');
       const fromId = parseInt(e.dataTransfer.getData('text/plain'), 10);
       const toIndex = parseInt(li.dataset.position, 10);
-      const order = playlist.map((p) => p.track_id);
+      const order = playlist.map((p) => p.id);
       const fromIndex = order.indexOf(fromId);
       if (fromIndex === -1 || fromIndex === toIndex) return;
       order.splice(fromIndex, 1);
@@ -227,195 +208,102 @@
     });
   }
 
-  async function fetchLibraryRoots() {
-    try {
-      const r = await fetch(`${API_BASE}/api/library-roots`);
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({ detail: r.statusText }));
-        const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Couldn\'t load library';
-        reportError('Fetch library roots failed', err, msg);
-        return;
-      }
-      hideLibraryError();
-      libraryRoots = await r.json();
-      renderLibraryRoots();
-      renderUploadRootSelect();
-    } catch (e) {
-      reportError('Fetch library roots failed', e, 'Couldn\'t load library');
+  function applyStatus(msg) {
+    playbackState = msg.state || 'stop';
+    elapsed = msg.elapsed || 0;
+    duration = msg.duration || 0;
+    statusServerTs = msg.server_timestamp || clientNowSeconds();
+    songId = msg.song_id ?? null;
+    title = msg.title || '';
+    artist = msg.artist || '';
+    randomOn = !!msg.random;
+    repeatMode = msg.repeat || 0;
+    playlist = msg.playlist || [];
+    if (msg.stream) {
+      streamRate = msg.stream.rate || streamRate;
+      streamChannels = msg.stream.channels || streamChannels;
+      frameSamples = msg.stream.frame_samples || frameSamples;
     }
+    renderPlaylist();
+    updateNowPlayingUI();
   }
 
-  function renderLibraryRoots() {
-    el.libraryRoots.innerHTML = '';
-    libraryRoots.forEach((root) => {
-      const li = document.createElement('li');
-      li.className = 'library-root-item';
-      li.innerHTML = `
-        <span class="name" title="${root.path}">${root.name || root.path}</span>
-        <div class="actions">
-          <button type="button" class="scan-root" data-root-id="${root.id}">Scan</button>
-          <button type="button" class="remove-root" data-root-id="${root.id}">Remove</button>
-        </div>
-      `;
-      li.querySelector('.scan-root').addEventListener('click', async () => {
-        if (scanInProgress) return;
-        scanInProgress = true;
-        setScanning(true);
-        try {
-          const r = await fetch(`${API_BASE}/api/scan?root_id=${root.id}`, { method: 'POST' });
-          if (!r.ok) {
-            const err = await r.json().catch(() => ({ detail: r.statusText }));
-            const msg = (r.status === 409 ? (err.detail ?? 'Scan already in progress') : (err.detail != null ? String(err.detail) : r.statusText)) || 'Scan failed';
-            reportError('Scan failed', err, msg);
-            return;
-          }
-          hideLibraryError();
-          const data = await r.json();
-          if (data.added > 0) {
-            const list = await fetch(`${API_BASE}/api/playlist`).then((res) => res.json());
-            playlist = list;
-            renderPlaylist();
-            fetchAllTracks();
-          }
-        } catch (e) {
-          reportError('Scan failed', e, 'Scan failed');
-        } finally {
-          scanInProgress = false;
-          setScanning(false);
-        }
-      });
-      li.querySelector('.remove-root').addEventListener('click', async () => {
-        try {
-          const r = await fetch(`${API_BASE}/api/library-roots/${root.id}`, { method: 'DELETE' });
-          if (!r.ok) {
-            const err = await r.json().catch(() => ({ detail: r.statusText }));
-            reportError('Remove root failed', err, err.detail || 'Failed to remove');
-            return;
-          }
-          hideLibraryError();
-          await fetchLibraryRoots();
-        } catch (e) {
-          reportError('Remove root failed', e, 'Failed to remove');
-        }
-      });
-      el.libraryRoots.appendChild(li);
-    });
-    setScanning(scanInProgress);
-  }
-
-  function renderUploadRootSelect() {
-    el.uploadRoot.innerHTML = '';
-    libraryRoots.forEach((root) => {
-      const opt = document.createElement('option');
-      opt.value = root.id;
-      opt.textContent = root.name || root.path;
-      el.uploadRoot.appendChild(opt);
-    });
-  }
-
-  async function fetchAllTracks() {
+  async function fetchLibrary() {
     try {
-      const r = await fetch(`${API_BASE}/api/tracks`);
+      const r = await fetch(`${API_BASE}/api/library`);
       if (!r.ok) {
         const err = await r.json().catch(() => ({ detail: r.statusText }));
-        const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Couldn\'t load tracks';
-        reportError('Fetch tracks failed', err, msg);
+        const msg = (err.detail != null ? String(err.detail) : r.statusText) || "Couldn't load library";
+        reportError('Fetch library failed', err, msg);
         return;
       }
       hideLibraryError();
-      const tracks = await r.json();
-      renderAllMedia(tracks);
+      const data = await r.json();
+      if (el.libraryBase) el.libraryBase.textContent = data.music_directory || '';
+      renderAllMedia(data.tracks || []);
     } catch (e) {
-      reportError('Fetch tracks failed', e, 'Couldn\'t load tracks');
+      reportError('Fetch library failed', e, "Couldn't load library");
     }
   }
 
   function renderAllMedia(tracks) {
     if (!el.libraryAllMedia) return;
     el.libraryAllMedia.innerHTML = '';
-    const byRoot = {};
+    const byFolder = {};
     tracks.forEach((t) => {
-      const key = t.library_root_id != null ? String(t.library_root_id) : 'none';
-      if (!byRoot[key]) byRoot[key] = { name: t.library_root_name || 'Other', tracks: [] };
-      byRoot[key].tracks.push(t);
+      const key = t.folder || '';
+      if (!byFolder[key]) byFolder[key] = [];
+      byFolder[key].push(t);
     });
-    Object.entries(byRoot).forEach(([rootKey, group]) => {
-      const section = document.createElement('div');
-      section.className = 'library-section';
-      const heading = document.createElement('div');
-      heading.className = 'heading';
-      heading.textContent = group.name;
-      section.appendChild(heading);
-
-      const byFolder = {};
-      group.tracks.forEach((t) => {
-        const f = t.folder;
-        const key = f === '.' || f === '' || f == null ? '' : f;
-        if (!byFolder[key]) byFolder[key] = [];
-        byFolder[key].push(t);
+    const folderKeys = Object.keys(byFolder).sort((a, b) => {
+      if (a === '') return -1;
+      if (b === '') return 1;
+      return a.localeCompare(b);
+    });
+    folderKeys.forEach((folderKey) => {
+      const folderTracks = byFolder[folderKey].sort((a, b) => {
+        const na = (a.title || a.file || '').toLowerCase();
+        const nb = (b.title || b.file || '').toLowerCase();
+        return na.localeCompare(nb);
       });
-      const folderKeys = Object.keys(byFolder).sort((a, b) => {
-        if (a === '') return -1;
-        if (b === '') return 1;
-        return a.localeCompare(b);
+      const folderBlock = document.createElement('div');
+      folderBlock.className = 'library-folder';
+      const header = document.createElement('div');
+      header.className = 'library-folder-header';
+      header.setAttribute('role', 'button');
+      header.setAttribute('aria-expanded', 'true');
+      header.innerHTML = `
+        <span class="library-folder-chevron" aria-hidden="true">▼</span>
+        <span class="library-folder-label">${escapeHtml(folderKey === '' ? '(root)' : folderKey)}</span>
+      `;
+      header.addEventListener('click', () => {
+        const collapsed = folderBlock.classList.toggle('is-collapsed');
+        header.setAttribute('aria-expanded', String(!collapsed));
       });
-
-      folderKeys.forEach((folderKey) => {
-        const folderTracks = byFolder[folderKey].sort((a, b) => {
-          const na = (a.title || a.filename || '').toLowerCase();
-          const nb = (b.title || b.filename || '').toLowerCase();
-          return na.localeCompare(nb);
-        });
-        const folderLabel = folderKey === '' ? '(root)' : folderKey;
-
-        const folderBlock = document.createElement('div');
-        folderBlock.className = 'library-folder';
-        const header = document.createElement('div');
-        header.className = 'library-folder-header';
-        header.setAttribute('role', 'button');
-        header.setAttribute('aria-expanded', 'true');
-        header.innerHTML = `
-          <span class="library-folder-chevron" aria-hidden="true">▼</span>
-          <span class="library-folder-label">${escapeHtml(folderLabel)}</span>
-        `;
-        header.addEventListener('click', () => {
-          const collapsed = folderBlock.classList.toggle('is-collapsed');
-          header.setAttribute('aria-expanded', String(!collapsed));
-        });
-
-        const ul = document.createElement('ul');
-        ul.className = 'list library-folder-list';
-        folderTracks.forEach((t) => {
-          const li = document.createElement('li');
-          li.className = 'item';
-          li.innerHTML = `
-          <span class="item-title" title="${escapeHtml((t.title || t.filename || ''))}">${escapeHtml(t.title || t.filename || '—')}</span>
+      const ul = document.createElement('ul');
+      ul.className = 'list library-folder-list';
+      folderTracks.forEach((t) => {
+        const li = document.createElement('li');
+        li.className = 'item';
+        li.innerHTML = `
+          <span class="item-title">${escapeHtml(t.title || t.file || '—')}</span>
           <span class="item-dur">${formatTime(t.duration_seconds)}</span>
-          <button type="button" class="library-add" data-track-id="${t.id}">Add</button>
+          <button type="button" class="library-add">Add</button>
         `;
-          li.querySelector('.library-add').addEventListener('click', (e) => {
-            e.stopPropagation();
-            sendWs({ type: 'playlist_add', track_id: t.id });
-          });
-          li.addEventListener('click', (e) => {
-            if (e.target.classList.contains('library-add')) return;
-            sendWs({ type: 'set_track', track_id: t.id });
-          });
-          ul.appendChild(li);
+        li.querySelector('.library-add').addEventListener('click', (e) => {
+          e.stopPropagation();
+          sendWs({ type: 'playlist_add', uri: t.file });
         });
-
-        folderBlock.appendChild(header);
-        folderBlock.appendChild(ul);
-        section.appendChild(folderBlock);
+        li.addEventListener('click', (e) => {
+          if (e.target.classList.contains('library-add')) return;
+          sendWs({ type: 'play_uri', uri: t.file });
+        });
+        ul.appendChild(li);
       });
-      el.libraryAllMedia.appendChild(section);
+      folderBlock.appendChild(header);
+      folderBlock.appendChild(ul);
+      el.libraryAllMedia.appendChild(folderBlock);
     });
-  }
-
-  function escapeHtml(s) {
-    const div = document.createElement('div');
-    div.textContent = s;
-    return div.innerHTML;
   }
 
   function sendWs(obj) {
@@ -423,14 +311,28 @@
   }
 
   function startClockSync() {
-    const clientTime = performance.now();
-    sendWs({ type: 'sync', client_time: clientTime });
+    burstBestRtt = Infinity;
+    for (let i = 0; i < SYNC_SAMPLES; i++) {
+      setTimeout(() => {
+        sendWs({ type: 'sync', client_time: performance.now() });
+      }, i * SYNC_GAP_MS);
+    }
+  }
+
+  function onSyncResponse(msg) {
+    const now = performance.now();
+    const rtt = now - msg.client_time;
+    if (!(rtt >= 0) || rtt >= burstBestRtt) return;
+    burstBestRtt = rtt;
+    clockOffsetMs = msg.server_utc * 1000 - (msg.client_time + rtt / 2);
+    clockReady = true;
   }
 
   function connectWs() {
     if (ws) ws.close();
     el.wsStatus.textContent = 'Connecting…';
     ws = new WebSocket(WS_URL);
+    ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       el.wsStatus.textContent = 'Connected';
       startClockSync();
@@ -443,9 +345,12 @@
       reconnectTimer = setTimeout(connectWs, 2000);
     };
     ws.onmessage = (event) => {
+      if (typeof event.data !== 'string') {
+        onPcm(event.data);
+        return;
+      }
       try {
-        const msg = JSON.parse(event.data);
-        handleWsMessage(msg);
+        handleWsMessage(JSON.parse(event.data));
       } catch (err) {
         reportError('WS message parse', err);
       }
@@ -454,45 +359,12 @@
 
   function handleWsMessage(msg) {
     const typ = msg.type;
-    if (typ === 'state_snapshot') {
-      playlist = msg.playlist || [];
-      const s = msg.state || {};
-      currentTrackId = s.current_track_id ?? null;
-      currentTrackFilename = msg.current_track_filename ?? null;
-      isPlaying = s.is_playing ?? false;
-      positionSeconds = s.position_seconds ?? 0;
-      lastUpdateServerTimestamp = s.last_update_server_timestamp ?? 0;
-      renderPlaylist();
-      applyPlaybackState();
-      updateNowPlayingUI();
+    if (typ === 'status') {
+      applyStatus(msg);
       return;
     }
     if (typ === 'sync_response') {
-      const now = performance.now();
-      const clientTime = msg.client_time;
-      const serverUtc = msg.server_utc;
-      const rtt = now - clientTime;
-      clockOffsetMs = serverUtc * 1000 - (clientTime + rtt / 2);
-      return;
-    }
-    if (typ === 'sync_tick') {
-      positionSeconds = msg.position_seconds ?? positionSeconds;
-      lastUpdateServerTimestamp = msg.server_timestamp ?? lastUpdateServerTimestamp;
-      currentTrackId = msg.current_track_id ?? currentTrackId;
-      isPlaying = msg.is_playing ?? isPlaying;
-      const drift = Math.abs(computedPositionSeconds() - (msg.position_seconds ?? 0));
-      if (isPlaying && drift > 0.25) applyPlaybackState();
-      updateNowPlayingUI();
-      return;
-    }
-    if (typ === 'play' || typ === 'pause' || typ === 'seek' || typ === 'set_track') {
-      positionSeconds = msg.position ?? 0;
-      lastUpdateServerTimestamp = msg.server_timestamp ?? 0;
-      currentTrackId = msg.track_id ?? currentTrackId;
-      isPlaying = msg.is_playing ?? (typ === 'play' || typ === 'set_track');
-      lastPlayAtServerUtc = msg.play_at_server_utc ?? null;
-      applyPlaybackState();
-      updateNowPlayingUI();
+      onSyncResponse(msg);
       return;
     }
     if (typ === 'chat') {
@@ -504,102 +376,126 @@
       ul.scrollTop = ul.scrollHeight;
       return;
     }
-    if (typ === 'playlist_updated') {
-      playlist = msg.playlist || [];
-      renderPlaylist();
-      updateNowPlayingUI();
+    if (typ === 'error' && msg.detail) {
+      reportError('MPD', msg.detail, String(msg.detail));
     }
   }
 
-  /** Catch-up offset when starting late (from lastPlayAtServerUtc). */
-  function catchUpStartOffset(basePosition) {
-    if (lastPlayAtServerUtc == null) return Math.max(0, basePosition);
-    const delaySec = delayCompensationMs / 1000;
-    const whenToStart = lastPlayAtServerUtc + delaySec;
-    const missed = clientNowSeconds() - whenToStart;
-    if (missed <= 0) return Math.max(0, basePosition);
-    return Math.max(0, basePosition + missed);
+  function ensureAudio() {
+    if (audioCtx) return;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctx();
+    gain = audioCtx.createGain();
+    gain.gain.value = el.volumeSlider ? el.volumeSlider.value / 100 : 1;
+    gain.connect(audioCtx.destination);
   }
 
-  function applyPlaybackState() {
-    const pos = Math.max(0, computedPositionSeconds());
-    const track = getCurrentTrack();
-    if (!track) {
-      stopPlayback();
-      return;
+  function unlockAudio() {
+    ensureAudio();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  }
+
+  function playAtFor(serverTs) {
+    const outputLatency = audioCtx.outputLatency || audioCtx.baseLatency || 0;
+    const serverNow = clientNowSeconds();
+    return (
+      audioCtx.currentTime +
+      (serverTs - serverNow) -
+      outputLatency +
+      BASE_BUFFER_SEC +
+      delayCompensationMs / 1000
+    );
+  }
+
+  function pcmToBuffer(arrayBuffer) {
+    const view = new Int16Array(arrayBuffer, 8);
+    const buffer = audioCtx.createBuffer(streamChannels, frameSamples, streamRate);
+    for (let channel = 0; channel < streamChannels; channel++) {
+      const out = buffer.getChannelData(channel);
+      for (let i = 0; i < frameSamples; i++) {
+        out[i] = view[i * streamChannels + channel] / 32768;
+      }
     }
-    const startOffset = catchUpStartOffset(pos);
-    if (playbackTrackId !== track.track_id) {
-      playbackTrackId = track.track_id;
-      const trackObj = getCurrentTrack();
-      currentTrackFilename = trackObj ? trackObj.filename : null;
-      playbackAudio.src = `${API_BASE}/music/track/${track.track_id}`;
-      playbackAudio.volume = el.volumeSlider ? el.volumeSlider.value / 100 : 1;
-      const onCanPlay = () => {
-        playbackAudio.removeEventListener('canplay', onCanPlay);
-        if (playbackTrackId !== currentTrackId) return;
-        playbackAudio.currentTime = startOffset;
-        lastPlayAtServerUtc = null;
-        if (isPlaying) playbackAudio.play().catch(() => {});
-        updateNowPlayingUI();
+    return buffer;
+  }
+
+  function flushAudio() {
+    pending = [];
+    for (const item of scheduled) {
+      try {
+        item.src.stop();
+      } catch (err) {
+        /* already stopped */
+      }
+    }
+    scheduled = [];
+  }
+
+  function schedulePending() {
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const still = [];
+    for (const item of pending) {
+      const when = playAtFor(item.serverTs);
+      if (when < now) continue;
+      if (when - now > LOOKAHEAD_SEC) {
+        still.push(item);
+        continue;
+      }
+      const src = audioCtx.createBufferSource();
+      src.buffer = item.buffer;
+      src.connect(gain);
+      src.start(when);
+      const entry = { src, when, serverTs: item.serverTs, buffer: item.buffer };
+      scheduled.push(entry);
+      src.onended = () => {
+        const index = scheduled.indexOf(entry);
+        if (index >= 0) scheduled.splice(index, 1);
       };
-      playbackAudio.addEventListener('canplay', onCanPlay);
-      startDriftCorrection();
+    }
+    pending = still;
+  }
+
+  function onPcm(arrayBuffer) {
+    ensureAudio();
+    const needed = 8 + frameSamples * streamChannels * 2;
+    if (arrayBuffer.byteLength < needed) return;
+    const serverTs = new DataView(arrayBuffer).getFloat64(0, true);
+    const frameSec = frameSamples / streamRate;
+    if (lastServerTs != null && Math.abs(serverTs - (lastServerTs + frameSec)) > frameSec * 1.5) {
+      flushAudio();
+    }
+    lastServerTs = serverTs;
+    pending.push({ serverTs, buffer: pcmToBuffer(arrayBuffer) });
+    if (!clockReady) {
+      const maxPending = Math.ceil(BASE_BUFFER_SEC / frameSec) + 2;
+      if (pending.length > maxPending) pending.splice(0, pending.length - maxPending);
       return;
     }
-    playbackAudio.currentTime = startOffset;
-    lastPlayAtServerUtc = null;
-    if (isPlaying) playbackAudio.play().catch(() => {});
-    else playbackAudio.pause();
-    updateNowPlayingUI();
+    schedulePending();
   }
 
-  function startDriftCorrection() {
-    if (driftCorrectionInterval) return;
-    const threshold = 0.4;
-    driftCorrectionInterval = setInterval(() => {
-      if (!playbackAudio.src || playbackTrackId !== currentTrackId) return;
-      if (!isPlaying) return;
-      const expected = computedPositionSeconds();
-      const drift = Math.abs(playbackAudio.currentTime - expected);
-      if (drift > threshold) playbackAudio.currentTime = expected;
-      updateNowPlayingUI();
-    }, 500);
-  }
-
-  function getNextTrack() {
-    if (!playlist.length) return null;
-    const idx = playlist.findIndex((p) => p.track_id === currentTrackId);
-    const nextIdx = shuffle ? Math.floor(Math.random() * playlist.length) : (idx + 1) % playlist.length;
-    return playlist[nextIdx] || null;
-  }
-
-  function getPrevTrack() {
-    if (!playlist.length) return null;
-    const idx = playlist.findIndex((p) => p.track_id === currentTrackId);
-    const prevIdx = idx <= 0 ? playlist.length - 1 : idx - 1;
-    return playlist[prevIdx] || null;
-  }
-
-  function stopPlayback() {
-    playbackAudio.pause();
-    playbackAudio.removeAttribute('src');
-    playbackAudio.load();
-    playbackTrackId = null;
-  }
-
-  function onPlaybackEnded() {
-    if (repeatMode === 1) {
-      sendWs({ type: 'seek', position_seconds: 0 });
-      sendWs({ type: 'play' });
-    } else if (repeatMode === 2 || (playlist.length && getNextTrack())) {
-      const next = getNextTrack();
-      if (next) sendWs({ type: 'set_track', track_id: next.track_id });
-      else sendWs({ type: 'seek', position_seconds: 0 });
-    } else {
-      sendWs({ type: 'pause' });
-      sendWs({ type: 'seek', position_seconds: 0 });
+  function onDelayInput() {
+    delayCompensationMs = parseInt(el.delaySlider.value, 10) || 0;
+    el.delayValue.textContent = String(delayCompensationMs);
+    localStorage.setItem(DELAY_KEY, String(delayCompensationMs));
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const keep = [];
+    for (const item of scheduled) {
+      if (item.when > now + 0.02) {
+        try {
+          item.src.stop();
+        } catch (err) {
+          /* already started */
+        }
+        pending.push({ serverTs: item.serverTs, buffer: item.buffer });
+      } else {
+        keep.push(item);
+      }
     }
+    scheduled = keep;
+    schedulePending();
   }
 
   function uiLoop() {
@@ -607,16 +503,13 @@
     requestAnimationFrame(uiLoop);
   }
 
+  document.addEventListener('pointerdown', unlockAudio);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') startClockSync();
   });
   window.addEventListener('online', () => connectWs());
-
   window.addEventListener('error', (event) => {
-    reportError(
-      'Uncaught error',
-      event.error || event.message,
-    );
+    reportError('Uncaught error', event.error || event.message);
   });
   window.addEventListener('unhandledrejection', (event) => {
     reportError('Unhandled promise rejection', event.reason);
@@ -627,7 +520,7 @@
       libraryPanelOpen = !libraryPanelOpen;
       el.panelLibrary.classList.toggle('is-hidden', !libraryPanelOpen);
       el.btnMenuLibrary.classList.toggle('is-active', libraryPanelOpen);
-      if (libraryPanelOpen) fetchAllTracks();
+      if (libraryPanelOpen) fetchLibrary();
     });
   }
   if (el.btnMenuChat && el.panelChat) {
@@ -638,100 +531,61 @@
     });
   }
   if (el.btnPlaylistClear) {
-    el.btnPlaylistClear.addEventListener('click', () => {
-      sendWs({ type: 'playlist_reorder', order: [] });
-    });
+    el.btnPlaylistClear.addEventListener('click', () => sendWs({ type: 'playlist_clear' }));
   }
 
   el.btnPlay.addEventListener('click', () => {
-    if (isPlaying) sendWs({ type: 'pause', position_seconds: computedPositionSeconds() });
-    else sendWs({ type: 'play' });
+    unlockAudio();
+    sendWs({ type: playbackState === 'play' ? 'pause' : 'play' });
   });
-  el.btnPrev.addEventListener('click', () => {
-    const prev = getPrevTrack();
-    if (prev) sendWs({ type: 'set_track', track_id: prev.track_id });
-    else sendWs({ type: 'seek', position_seconds: 0 });
-  });
-  el.btnNext.addEventListener('click', () => {
-    const next = getNextTrack();
-    if (next) sendWs({ type: 'set_track', track_id: next.track_id });
-  });
-  el.btnShuffle.addEventListener('click', () => {
-    shuffle = !shuffle;
-    el.btnShuffle.classList.toggle('is-active', shuffle);
-  });
+  el.btnPrev.addEventListener('click', () => sendWs({ type: 'previous' }));
+  el.btnNext.addEventListener('click', () => sendWs({ type: 'next' }));
+  el.btnShuffle.addEventListener('click', () => sendWs({ type: 'random', on: !randomOn }));
   el.btnRepeat.addEventListener('click', () => {
-    repeatMode = (repeatMode + 1) % 3;
-    el.btnRepeat.classList.toggle('is-active', repeatMode > 0);
-    el.btnRepeat.textContent = repeatMode === 1 ? '1' : repeatMode === 2 ? '∞' : '↻';
+    sendWs({ type: 'repeat', mode: (repeatMode + 1) % 3 });
+  });
+  el.seekBar.addEventListener('pointerdown', () => {
+    seekHold = true;
   });
   el.seekBar.addEventListener('change', () => {
-    const val = parseFloat(el.seekBar.value);
-    sendWs({ type: 'seek', position_seconds: val });
+    seekHold = false;
+    sendWs({ type: 'seek', position_seconds: parseFloat(el.seekBar.value) });
   });
   el.volumeSlider.addEventListener('input', () => {
-    const v = el.volumeSlider.value / 100;
-    playbackAudio.volume = v;
+    if (gain) gain.gain.value = el.volumeSlider.value / 100;
   });
-  el.delaySlider.addEventListener('input', () => {
-    delayCompensationMs = parseInt(el.delaySlider.value, 10);
-    el.delayValue.textContent = delayCompensationMs;
-  });
-  if (el.delaySlider && el.delayValue) {
-    delayCompensationMs = parseInt(el.delaySlider.value, 10);
-    el.delayValue.textContent = delayCompensationMs;
-  }
-  if (el.volumeSlider) playbackAudio.volume = el.volumeSlider.value / 100;
+  el.delaySlider.addEventListener('input', onDelayInput);
 
-  el.btnAddLibrary.addEventListener('click', async () => {
-    const path = el.libraryPath.value.trim();
-    if (!path) return;
-    hideLibraryError();
-    try {
-      const r = await fetch(`${API_BASE}/api/library-roots`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path, name: el.libraryName.value.trim() || null }),
-      });
-      if (!r.ok) {
-        const err = await r.json().catch(() => ({ detail: r.statusText }));
-        reportError('Add library failed', err, err.detail || 'Failed to add');
-        return;
-      }
-      el.libraryPath.value = '';
-      el.libraryName.value = '';
-      await fetchLibraryRoots();
-    } catch (e) {
-      reportError('Add library failed', e, e.message || 'Failed to add');
-    }
-  });
+  const savedDelay = parseInt(localStorage.getItem(DELAY_KEY) || '0', 10);
+  if (Number.isFinite(savedDelay)) {
+    delayCompensationMs = Math.max(-250, Math.min(250, savedDelay));
+    el.delaySlider.value = String(delayCompensationMs);
+    el.delayValue.textContent = String(delayCompensationMs);
+  }
 
   el.btnUpload.addEventListener('click', () => el.fileInput.click());
   el.fileInput.addEventListener('change', async () => {
     const files = el.fileInput.files;
-    if (!files?.length) return;
-    const rootId = el.uploadRoot.value ? parseInt(el.uploadRoot.value, 10) : null;
+    if (!files || !files.length) return;
     for (const file of files) {
       const fd = new FormData();
       fd.append('file', file);
-      const url = rootId != null ? `${API_BASE}/api/upload?root_id=${rootId}` : `${API_BASE}/api/upload`;
       try {
-        const r = await fetch(url, { method: 'POST', body: fd });
+        const r = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: fd });
         if (!r.ok) {
           const err = await r.json().catch(() => ({ detail: r.statusText }));
-          const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Upload failed';
-          reportError('Upload failed', err, msg);
+          reportError('Upload failed', err, (err.detail != null ? String(err.detail) : r.statusText) || 'Upload failed');
           continue;
         }
         hideLibraryError();
-        const data = await r.json();
-        sendWs({ type: 'playlist_add', track_id: data.id });
       } catch (e) {
         reportError('Upload failed', e, 'Upload failed');
       }
     }
     el.fileInput.value = '';
+    fetchLibrary();
   });
+
   el.btnScan.addEventListener('click', async () => {
     if (scanInProgress) return;
     scanInProgress = true;
@@ -745,13 +599,7 @@
         return;
       }
       hideLibraryError();
-      const data = await r.json();
-      if (data.added > 0) {
-        const list = await fetch(`${API_BASE}/api/playlist`).then((res) => res.json());
-        playlist = list;
-        renderPlaylist();
-        fetchAllTracks();
-      }
+      await fetchLibrary();
     } catch (e) {
       reportError('Scan failed', e, 'Scan failed');
     } finally {
@@ -771,9 +619,7 @@
     if (e.key === 'Enter') el.chatSend.click();
   });
 
-  playbackAudio.addEventListener('ended', onPlaybackEnded);
-
   connectWs();
-  fetchLibraryRoots();
+  scheduleTimer = setInterval(schedulePending, 20);
   uiLoop();
 })();

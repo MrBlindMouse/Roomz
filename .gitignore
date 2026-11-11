@@ -8,15 +8,15 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .pytest_cache/
+.coverage
 *.egg-info/
 dist/
 build/
 *.egg
 
-# Data (user content + local DB)
-data/music/*
-!data/music/.gitkeep
+# Local runtime data (music library, MPD state when under project data/)
 data/*
+!data/.gitkeep
 
 # Environment
 .env

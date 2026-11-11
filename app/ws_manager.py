@@ -32,11 +32,23 @@ class ConnectionManager:
         if isinstance(message, dict):
             message = json.dumps(message)
         dead: list[WebSocket] = []
-        for ws in self._connections:
+        for ws in list(self._connections):
             try:
                 await ws.send_text(message)
             except Exception as e:
                 logger.warning("WS send failed: %s", e)
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+    async def broadcast_bytes(self, data: bytes) -> None:
+        """Send one PCM frame to every client."""
+        dead: list[WebSocket] = []
+        for ws in list(self._connections):
+            try:
+                await ws.send_bytes(data)
+            except Exception as e:
+                logger.warning("WS binary send failed: %s", e)
                 dead.append(ws)
         for ws in dead:
             self.disconnect(ws)

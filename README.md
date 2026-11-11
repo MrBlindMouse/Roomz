@@ -1,26 +1,25 @@
-# Roomz (Name change pending)
+# Roomz
 
-LAN-synchronized single-stream audio playback: one global stream, all devices in sync. Like an old school radio!
+LAN-synchronized single-stream audio. MPD plays one timeline. Every browser on the LAN hears that stream, and each device can shift it by a few milliseconds.
 
-- **Single global stream** — no rooms, no codes. One playlist and one playback state for the entire LAN.
-- **Sub-10 ms sync** on LAN using NTP-style clock sync and Web Audio API.
-- **Per-device delay** (0–500 ms) to compensate for speaker placement.
-- **Multiple library folders** — add paths from the UI (under an allowed base); scan recursively. Upload to a chosen folder.
-- Upload or scan, collaborative playlist, simple chat.
-
+- **One stream.** No rooms, no per-device playlists. Play, pause, seek, and the queue are shared.
+- **Per-device delay** (−250..250 ms), remembered in the browser. Positive delay plays later. Use it by ear when a speaker sits farther away.
+- **Automatic alignment** from frame timestamps and a short clock-sync burst. The seek bar follows MPD. It does not drive the audio.
+- **One music folder.** Upload or scan. MPD indexes the files.
 
 ## The Why
 
-I created Roomz because I was annoyed that I cannot connect more than 1 BT Speaker to my phone for wider 'covarage'. 
+I created Roomz because I was annoyed that I cannot connect more than 1 BT Speaker to my phone for wider coverage.
 
-Now I can play music throughout my house from multiple devices.
+Now I can play music throughout the house from multiple devices.
 
 I'm pretty sure something else already exists for this. . . but so-what.
 
-### Future plans:
+### Future plans
+
 - Add a centralized control, for managing per device delays and volume from one client.
 - Create a client for rpi or headless devices.
-- Maybe add a 'Announcement' function to the 'Main' client, to broadcast voice over the stream.
+- Maybe add an announcement function to the main client, to broadcast voice over the stream.
 
 ### Warning
 
@@ -28,46 +27,55 @@ Roomz is meant to be run on a private LAN/Home network. There is no security bui
 
 ## Run
 
-Copy `.env.example` to `.env` and adjust if needed (e.g. `ROOMZ_LIBRARY_BASE`). The app loads `.env` automatically at startup.
+MPD is the player. Roomz does not start it.
+
+1. Install MPD (`mpd` from your distro).
+2. Edit the absolute paths in [`mpd/mpd.conf`](mpd/mpd.conf). `music_directory` must be `ROOMZ_LIBRARY_BASE` (default: this repo's `data/`). The FIFO path must be `ROOMZ_FIFO` (default: `/tmp/roomz-audio.fifo`).
+3. `mkdir -p` the playlist directory from that config.
+4. `mpd /absolute/path/to/Roomz/mpd/mpd.conf`
+
+Copy `.env.example` to `.env` if you need a non-default host, port, FIFO, or music directory. The app loads `.env` at startup.
 
 ```bash
 uv sync
 uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Then open `http://<this-machine-ip>:8000` in a browser.
+Then open `http://<this-machine-ip>:8000`. `/health` stays unhealthy until MPD answers and the FIFO exists.
+
+The stream is 16-bit stereo PCM at 44100 Hz, about 176 KB/s per browser. Headphones and speakers on this server stay quiet unless a browser is open here too: MPD's only output is the FIFO.
 
 ## Development
-
-Install with dev dependencies (pytest, ruff, black), then run tests and lint:
 
 ```bash
 uv sync --extra dev
 uv run pytest
 uv run ruff check .
-uv run black --check .   # optional
+uv run black --check .
 ```
 
 ## Multi-device sync test
 
-1. Run the server on a machine on your LAN (e.g. `192.168.1.10`).
-2. On multiple devices (phones, laptops, same LAN), open `http://192.168.1.10:8000`.
-3. Add or scan music, press play. All clients should play the same track at the same position.
-4. Use **Speaker delay (ms)** on each device to align with physical speaker placement (e.g. farther speakers get more delay).
+1. Start MPD, then Roomz, on a machine on your LAN.
+2. On two devices, open `http://<this-machine-ip>:8000`. Click the page once so the browser allows audio.
+3. Add or scan music, press play. Both play the same stream without playhead jumps.
+4. Move **Speaker delay (ms)** on one device. Only that device shifts.
 
 ## Adding music
 
-- **Library folders**: In **Library folders**, add a path (and optional name). Paths must be under the allowed base (default: project `data/`; set `ROOMZ_LIBRARY_BASE` to allow e.g. `/home/you/Music`). Remove a folder only when it has no tracks.
-- **Upload**: Choose a destination folder in the **Upload to** dropdown, then **Upload** and select MP3/WAV/OGG/M4A/FLAC files. They are saved under that folder and added to the playlist.
-- **Scan**: **Scan all** scans every library folder recursively; or click **Scan** next to a folder to scan only that one. New files are added to the DB and playlist.
+- **Upload** writes into the music directory, asks MPD to rescan, and appends the file to the queue.
+- **Scan** runs an MPD database update.
+- The library panel lists what MPD has indexed. **Add** queues a file. Clicking the row plays it.
 
 ## Per-device delay
 
-Use the **Speaker delay compensation (ms)** slider (0–500) in the header to fine-tune each device. No server round-trip; applies instantly to the sync position so playback stays aligned with others.
+The slider is local to the browser (`localStorage`). It changes when the next PCM frames are played. It does not seek the file and it does not move anyone else's speakers. The house volume is not on this slider either: the volume control is a local gain.
 
-## Sync accuracy
+## Sync
 
-On a typical LAN, sync within **&lt;10 ms** is achievable with Web Audio API and clock sync. Browser and device output latency can add a constant offset; use the delay slider to compensate so all speakers sound in phase.
+Each ~20 ms frame carries the server time of its first sample. The browser schedules it on an `AudioContext` at that time, plus a 300 ms buffer, plus this device's delay. A jump in the timestamps (seek, pause, track change) flushes the buffer. Clock offset uses the lowest-RTT sample from a short burst.
+
+What the browser will not tell us — output delay past `AudioContext.outputLatency` — is the job of the slider. A tab in the background is not a reliable speaker.
 
 ## Project structure
 
@@ -75,39 +83,26 @@ On a typical LAN, sync within **&lt;10 ms** is achievable with Web Audio API and
 Roomz/
 ├── pyproject.toml
 ├── uv.lock
+├── mpd/mpd.conf       # sample MPD config (FIFO output)
 ├── tests/
-│   ├── conftest.py
-│   └── test_app.py
 ├── app/
-│   ├── main.py          # FastAPI app, /music/track/{id}, /ws, static mount
-│   ├── config.py        # LIBRARY_BASE, validate_library_path
-│   ├── models.py
-│   ├── schemas.py
-│   ├── crud.py
-│   ├── db.py
+│   ├── main.py        # /health, /ws, static mount
+│   ├── mpd_client.py  # MPD protocol
+│   ├── stream.py      # FIFO frames
+│   ├── config.py
+│   ├── mpd_access.py
 │   ├── ws_manager.py
-│   ├── clock_sync.py
-│   ├── audio_utils.py
-│   └── routers/
-│       └── api.py       # upload, scan, playlist CRUD
-├── data/
-│   ├── music/           # audio files
-│   └── app.db           # SQLite
-├── frontend/
-│   ├── index.html
-│   └── static/          # CSS and JS assets
-│       ├── app.js
-│       ├── colors.css
-│       ├── _reset.css
-│       ├── base.css
-│       ├── layout.css
-│       └── components.css
-└── alembic/
+│   └── routers/api.py # library, upload, scan
+├── data/              # music directory by default
+└── frontend/
+    ├── index.html
+    └── static/
 ```
 
 ## Tech stack
 
-- **Backend**: FastAPI, Uvicorn, SQLAlchemy 2.0 (async), Alembic, SQLite, mutagen, aiofiles. Managed with **uv**.
-- **Frontend**: Vanilla HTML/CSS/JS, layered vanilla CSS (reset, base, colors, layout, components), Web Audio API (with &lt;audio&gt; fallback).
+- **Player**: MPD, one FIFO output.
+- **Backend**: FastAPI, Uvicorn, aiofiles. Managed with **uv**.
+- **Frontend**: Vanilla HTML/CSS/JS, Web Audio API.
 
-No auth (LAN-only). Production run: `uv run uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+No auth (LAN-only).

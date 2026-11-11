@@ -1,39 +1,45 @@
-"""Library path config and validation. All library roots must be under LIBRARY_BASE."""
+"""Paths, MPD settings, and server clock for sync messages."""
 
 import os
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import HTTPException
-
-from app.db import DATA_DIR
 
 load_dotenv()
 
-# All library root paths must resolve under this directory (env or default data/)
-LIBRARY_BASE_STR = os.environ.get("ROOMZ_LIBRARY_BASE")
-LIBRARY_BASE: Path = Path(LIBRARY_BASE_STR).resolve() if LIBRARY_BASE_STR else (DATA_DIR.resolve())
+# Project data directory. Default music library when ROOMZ_LIBRARY_BASE is unset.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
-def validate_library_path(path: str) -> Path:
-    """Resolve path to absolute, ensure it is a directory under LIBRARY_BASE. Raise 400 if invalid."""
-    try:
-        resolved = Path(path).resolve()
-    except (OSError, RuntimeError) as e:
-        raise HTTPException(status_code=400, detail="Invalid path") from e
-    if not resolved.is_dir():
-        raise HTTPException(status_code=400, detail="Path is not a directory")
-    if not resolved.exists():
-        raise HTTPException(status_code=400, detail="Path does not exist")
-    try:
-        if not resolved.is_relative_to(LIBRARY_BASE):
-            raise HTTPException(
-                status_code=400,
-                detail="Path must be under the allowed library base",
-            )
-    except (ValueError, TypeError):
-        raise HTTPException(
-            status_code=400,
-            detail="Path must be under the allowed library base",
-        )
-    return resolved
+def library_base() -> Path:
+    """Directory MPD indexes and uploads are written into."""
+    raw = os.environ.get("ROOMZ_LIBRARY_BASE")
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return DATA_DIR.resolve()
+
+
+def mpd_host() -> str:
+    """MPD protocol host. Roomz talks to MPD on localhost."""
+    return os.environ.get("MPD_HOST", "127.0.0.1")
+
+
+def mpd_port() -> int:
+    """MPD protocol port."""
+    return int(os.environ.get("MPD_PORT", "6600"))
+
+
+def fifo_path() -> Path:
+    """PCM FIFO written by MPD and read by Roomz. Must match mpd.conf."""
+    return Path(os.environ.get("ROOMZ_FIFO", "/tmp/roomz-audio.fifo"))
+
+
+def ensure_dirs() -> None:
+    """Create the music directory if it does not exist."""
+    library_base().mkdir(parents=True, exist_ok=True)
+
+
+def server_timestamp_utc() -> float:
+    """Unix seconds for WebSocket sync and frame stamping."""
+    return time.time()
