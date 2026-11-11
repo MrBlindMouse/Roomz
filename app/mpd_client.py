@@ -1,7 +1,7 @@
 """Small async MPD client. Two sockets: commands, and idle.
 
-MPD is the only queue and the only library index. This module speaks the
-text protocol; it does not decode audio.
+MPD owns the live queue, the library index, and named playlists. This module
+speaks the text protocol; it does not decode audio.
 """
 
 import asyncio
@@ -208,7 +208,15 @@ class MpdClient:
         status = parse_pairs(await self._command("status"))
         song = parse_pairs(await self._command("currentsong"))
         playlist = parse_objects(await self._command("playlistinfo"), "file")
-        return build_status(status, song, playlist, server_timestamp_utc())
+        payload = build_status(status, song, playlist, server_timestamp_utc())
+        from app.playlists import active_name
+
+        payload["stored_playlist"] = active_name()
+        try:
+            payload["stored_playlists"] = await self.list_stored()
+        except MpdError:
+            payload["stored_playlists"] = []
+        return payload
 
     async def list_library(self) -> list[dict[str, Any]]:
         """Every file MPD has indexed."""
@@ -270,6 +278,43 @@ class MpdClient:
         if not moves:
             return
         await self._command_list([encode_command("move", src, dest) for src, dest in moves])
+
+    async def list_stored(self) -> list[str]:
+        """Names of playlists saved in MPD's playlist directory."""
+        songs = parse_objects(await self._command("listplaylists"), "playlist")
+        return sorted(item["playlist"] for item in songs if item.get("playlist"))
+
+    async def delete_stored(self, name: str) -> None:
+        await self._command(encode_command("rm", name))
+
+    async def store_queue_as(self, name: str) -> None:
+        """Replace a stored playlist with the current queue."""
+        from app.playlists import write_empty_playlist
+
+        try:
+            await self._command(encode_command("rm", name))
+        except MpdError:
+            logger.info("stored playlist %s was not there to replace", name)
+        songs = parse_objects(await self._command("playlistinfo"), "file")
+        if not songs:
+            write_empty_playlist(name)
+            return
+        await self._command(encode_command("save", name))
+
+    async def load_stored(self, name: str) -> None:
+        """Replace the live queue with a stored playlist. Keep playing if it was playing."""
+        status = parse_pairs(await self._command("status"))
+        playing = status.get("state") == "play"
+        await self.clear()
+        await self._command(encode_command("load", name))
+        if playing:
+            await self.play()
+
+    async def play_directory(self, uri: str) -> None:
+        """Replace the live queue with one library directory and start it."""
+        await self.clear()
+        await self._command(encode_command("add", uri))
+        await self.play()
 
     async def update_library(self) -> None:
         """Ask MPD to rescan the music directory and wait until it finishes."""

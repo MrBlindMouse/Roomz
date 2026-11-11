@@ -10,10 +10,24 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.config import ensure_dirs, fifo_path, mpd_host, mpd_port, server_timestamp_utc
+from app.config import (
+    ensure_dirs,
+    fifo_path,
+    mpd_config_problems,
+    mpd_host,
+    mpd_port,
+    server_timestamp_utc,
+)
 from app.logging_config import configure_logging
 from app.mpd_access import mpd_from_app
 from app.mpd_client import MpdClient, MpdError, empty_status, probe_mpd
+from app.playlists import (
+    active_name,
+    clear_active_name,
+    folder_uri,
+    playlist_name,
+    set_active_name,
+)
 from app.routers.api import router as api_router
 from app.stream import fifo_is_ready, supervise_fifo
 from app.ws_manager import manager
@@ -39,6 +53,8 @@ async def _publish_status() -> None:
 async def lifespan(app: FastAPI):
     """Connect the MPD watcher and the FIFO reader. MPD itself is not started here."""
     ensure_dirs()
+    for problem in mpd_config_problems():
+        logger.error("MPD config: %s", problem)
     stop = asyncio.Event()
     client = MpdClient(mpd_host(), mpd_port())
     app.state.mpd = client
@@ -64,17 +80,28 @@ app = FastAPI(title="Roomz", description="LAN-synchronized single-stream audio",
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    """200 only when MPD accepts a connection and the PCM FIFO exists."""
-    mpd_ok = await probe_mpd(mpd_host(), mpd_port())
-    fifo_ok = fifo_is_ready(fifo_path())
-    if mpd_ok and fifo_ok:
-        return JSONResponse(status_code=200, content={"status": "ok"})
+    """200 only when mpd.conf is usable, MPD answers, and the FIFO exists."""
+    host, port = mpd_host(), mpd_port()
+    fifo = fifo_path()
+    path_problems = mpd_config_problems()
+    problems = list(path_problems)
+    mpd_ok = await probe_mpd(host, port)
+    fifo_ok = fifo_is_ready(fifo)
+    if not mpd_ok:
+        problems.append(f"MPD is not accepting connections at {host}:{port}.")
+    if not fifo_ok:
+        problems.append(
+            f"PCM FIFO is missing at {fifo}. MPD's fifo output creates it when MPD starts."
+        )
+    ok = not problems
     return JSONResponse(
-        status_code=503,
+        status_code=200 if ok else 503,
         content={
-            "status": "unhealthy",
+            "status": "ok" if ok else "unhealthy",
             "mpd": "ok" if mpd_ok else "down",
             "fifo": "ok" if fifo_ok else "down",
+            "paths": "ok" if not path_problems else "mismatch",
+            "problems": problems,
         },
     )
 
@@ -118,10 +145,45 @@ async def uncaught_exception_handler(request: Request, exc: Exception):
     )
 
 
+_QUEUE_EDITS = frozenset(
+    {"playlist_add", "playlist_remove", "playlist_clear", "playlist_reorder", "play_uri"}
+)
+
+
+async def _autosave(mpd: MpdClient) -> None:
+    """Write the live queue back to the named playlist, when one is selected."""
+    name = active_name()
+    if name:
+        await mpd.store_queue_as(name)
+
+
 async def _run_command(msg: dict) -> bool:
     """Apply one control message. Return False when the type is not a command."""
     mpd = mpd_from_app(app)
     typ = msg.get("type") or ""
+    if typ == "playlist_new":
+        name = playlist_name(msg.get("name"))
+        set_active_name(name)
+        await mpd.store_queue_as(name)
+        return True
+    if typ == "playlist_switch":
+        name = playlist_name(msg.get("name"))
+        await mpd.load_stored(name)
+        set_active_name(name)
+        return True
+    if typ == "playlist_detach":
+        clear_active_name()
+        return True
+    if typ == "playlist_delete":
+        name = playlist_name(msg.get("name"))
+        await mpd.delete_stored(name)
+        if active_name() == name:
+            clear_active_name()
+        return True
+    if typ == "play_folder":
+        clear_active_name()
+        await mpd.play_directory(folder_uri(msg.get("uri")))
+        return True
     if typ == "play":
         await mpd.play()
     elif typ == "pause":
@@ -160,6 +222,8 @@ async def _run_command(msg: dict) -> bool:
             await mpd.reorder([int(song_id) for song_id in order])
     else:
         return False
+    if typ in _QUEUE_EDITS:
+        await _autosave(mpd)
     return True
 
 

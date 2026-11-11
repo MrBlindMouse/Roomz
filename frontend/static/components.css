@@ -106,6 +106,12 @@
     margin-bottom: 0;
   }
 
+  .sync-health {
+    font-size: 0.75rem;
+    color: var(--color-ink-subtle);
+    white-space: nowrap;
+  }
+
   .panel .heading {
     font-size: 0.875rem;
     font-weight: 500;
@@ -139,6 +145,19 @@
     margin-top: 0.25rem;
   }
 
+  .notice {
+    margin: 0.75rem 1rem 0;
+    padding: 0.5rem 0.75rem;
+    border-radius: 0.5rem;
+    background: var(--color-canvas-negative);
+    color: var(--color-ink);
+    font-size: 0.875rem;
+  }
+
+  .content .notice {
+    margin: 0 0 0.75rem;
+  }
+
   .playlist,
   .library-folder-list {
     list-style: none;
@@ -151,6 +170,27 @@
     border-radius: 0.5rem;
     border: 1px solid var(--color-border);
     min-height: 0;
+  }
+
+  .playlist-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .playlist-switch .input {
+    flex: 1;
+    min-width: 8rem;
+  }
+
+  .library-folder-header .library-play {
+    margin-left: auto;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    background: var(--color-canvas-accent);
+    color: var(--color-ink-on-accent);
   }
 
   .playlist-item {
@@ -239,8 +279,23 @@
   #volume-slider { width: 8rem; }
   #delay-slider { width: 6rem; }
 
+  .library-search {
+    width: 100%;
+    margin-bottom: 0.5rem;
+  }
+
+  .library-empty {
+    padding: 0.75rem;
+    color: var(--color-ink-subtle);
+    font-size: 0.875rem;
+  }
+
   .library-folder {
     margin-top: 0.125rem;
+  }
+
+  .library-folder .library-folder {
+    margin-left: 0.75rem;
   }
 
   .library-folder-header {
@@ -296,6 +351,16 @@
 
   .library-folder-list .item-title {
     flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .library-folder-list .item-meta {
+    color: var(--color-ink-subtle);
+    font-size: 0.75rem;
+    flex-shrink: 1;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;

@@ -174,4 +174,37 @@
     font-weight: 500;
     color: var(--color-ink-muted);
   }
+
+  body.is-speaker .nav-btn:not(#btn-speaker),
+  body.is-speaker .playlist-area,
+  body.is-speaker .panel {
+    display: none;
+  }
+
+  body.is-speaker .main .content {
+    justify-content: center;
+  }
+
+  body.is-speaker .now-playing {
+    flex: 1;
+    align-items: center;
+    margin-bottom: 0;
+    background: transparent;
+  }
+
+  body.is-speaker .now-playing .art {
+    width: min(40vw, 16rem);
+    height: min(40vw, 16rem);
+    font-size: 4rem;
+  }
+
+  body.is-speaker .now-playing .title {
+    font-size: clamp(2rem, 8vw, 5rem);
+    font-weight: 600;
+    white-space: normal;
+  }
+
+  body.is-speaker .now-playing .artist {
+    font-size: clamp(1.25rem, 3vw, 2rem);
+  }
 }

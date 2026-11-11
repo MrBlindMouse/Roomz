@@ -1,4 +1,4 @@
-"""Pytest fixtures. Lifespan retries MPD/FIFO when env points at nothing."""
+"""Pytest fixtures. Lifespan retries MPD/FIFO when overrides point at nothing."""
 
 import pytest
 from fastapi.testclient import TestClient

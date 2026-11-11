@@ -18,6 +18,9 @@ build/
 data/*
 !data/.gitkeep
 
+# Local MPD config (copy from mpd/mpd.conf.example)
+mpd/mpd.conf
+
 # Environment
 .env
 .env.local

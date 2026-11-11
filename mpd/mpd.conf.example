@@ -1,10 +1,11 @@
-# Roomz sample MPD config. Roomz does not start MPD.
+# Roomz MPD config template. Roomz does not start MPD.
 #
-# Install the distro package (`mpd`), edit the absolute paths, create the
-# playlist directory, then run: mpd /absolute/path/to/Roomz/mpd/mpd.conf
+#   cp mpd/mpd.conf.example mpd/mpd.conf
 #
-# music_directory must be ROOMZ_LIBRARY_BASE (default: this repo's data/).
-# The fifo path must be ROOMZ_FIFO (default: /tmp/roomz-audio.fifo).
+# Edit mpd/mpd.conf (gitignored): set absolute paths, create the playlist directory, then:
+#   mpd /absolute/path/to/Roomz/mpd/mpd.conf
+#
+# Roomz reads music_directory, bind_to_address, port, and the fifo path from this file.
 # One FIFO output. Browsers play that stream; this machine's speakers do not.
 
 music_directory     "/absolute/path/to/Roomz/data"

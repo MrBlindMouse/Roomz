@@ -16,6 +16,7 @@
       <nav class="buttons">
         <button type="button" id="btn-menu-library" class="nav-btn">Library</button>
         <button type="button" id="btn-menu-chat" class="nav-btn">Chat</button>
+        <button type="button" id="btn-speaker" class="nav-btn">Speaker</button>
       </nav>
     </div>
     <div class="title">
@@ -23,6 +24,7 @@
     </div>
     <div class="meta">
       <span id="ws-status" class="ws-status">Connecting…</span>
+      <span id="sync-health" class="sync-health">Syncing clock</span>
       <label class="label label--inline">
         <span>Speaker delay (ms)</span>
         <input type="range" id="delay-slider" min="-250" max="250" value="0" />
@@ -30,6 +32,8 @@
       </label>
     </div>
   </header>
+
+  <p id="status-banner" class="notice is-hidden" role="status"></p>
 
   <main class="main">
     <aside id="panel-library" class="panel panel--library is-hidden">
@@ -45,11 +49,14 @@
       </div>
       <div class="section section--grow">
         <h2 class="heading">All media</h2>
+        <input type="search" id="library-search" class="input library-search" placeholder="Title, artist, album" />
+        <input type="text" id="upload-folder" class="input library-search" placeholder="Upload folder (optional)" />
         <div id="library-all-media" class="library-all-media"></div>
       </div>
     </aside>
 
     <section class="content">
+      <p id="home-error" class="notice is-hidden" role="alert"></p>
       <div class="now-playing">
         <div id="album-art" class="art">♪</div>
         <div class="info">
@@ -79,6 +86,12 @@
         <div class="head">
           <h2 class="title">Playlist</h2>
           <button type="button" id="btn-playlist-clear" class="btn">Clear all</button>
+        </div>
+        <div class="playlist-switch">
+          <select id="playlist-select" class="input" aria-label="Saved playlist"></select>
+          <button type="button" id="btn-playlist-delete" class="btn">Delete</button>
+          <input type="text" id="playlist-new-name" class="input" placeholder="Name this queue" />
+          <button type="button" id="btn-playlist-new" class="btn">Save as</button>
         </div>
         <ul id="playlist" class="playlist"></ul>
       </div>

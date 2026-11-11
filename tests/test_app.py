@@ -75,6 +75,8 @@ def test_health_is_down_without_mpd(client: TestClient) -> None:
     body = response.json()
     assert body["mpd"] == "down"
     assert body["fifo"] == "down"
+    assert body["status"] == "unhealthy"
+    assert body["problems"]
 
 
 def test_health_ok_when_mpd_and_fifo_are_up(client: TestClient, tmp_path, monkeypatch) -> None:
@@ -106,16 +108,35 @@ def test_health_ok_when_mpd_and_fifo_are_up(client: TestClient, tmp_path, monkey
     thread = threading.Thread(target=thread_main, daemon=True)
     thread.start()
     assert ready.wait(2)
+    library = tmp_path / "music"
+    library.mkdir()
     fifo = tmp_path / "roomz.fifo"
     os.mkfifo(fifo)
+    conf = tmp_path / "mpd.conf"
+    conf.write_text(
+        f'music_directory "{library}"\n'
+        'bind_to_address "127.0.0.1"\n'
+        f'port "{holder["port"]}"\n'
+        "audio_output {\n"
+        '    type "fifo"\n'
+        f'    path "{fifo}"\n'
+        "}\n",
+        encoding="utf-8",
+    )
     assert fifo_is_ready(fifo)
-    monkeypatch.setenv("MPD_HOST", "127.0.0.1")
-    monkeypatch.setenv("MPD_PORT", str(holder["port"]))
-    monkeypatch.setenv("ROOMZ_FIFO", str(fifo))
+    for name in ("MPD_HOST", "MPD_PORT", "ROOMZ_LIBRARY_BASE", "ROOMZ_FIFO"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ROOMZ_MPD_CONF", str(conf))
     try:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        assert response.json() == {
+            "status": "ok",
+            "mpd": "ok",
+            "fifo": "ok",
+            "paths": "ok",
+            "problems": [],
+        }
     finally:
         stop.set()
         thread.join(timeout=2)
@@ -178,6 +199,37 @@ def test_upload_writes_into_the_music_directory(client: TestClient, tmp_path, mo
         assert "update" in fake.calls
     finally:
         main_app.dependency_overrides.pop(get_mpd, None)
+
+
+def test_upload_can_target_a_subfolder(client: TestClient, tmp_path, monkeypatch) -> None:
+    """An optional folder is created under the music directory and queued as a relative path."""
+    monkeypatch.setenv("ROOMZ_LIBRARY_BASE", str(tmp_path))
+    fake = FakeMpd()
+    main_app.dependency_overrides[get_mpd] = lambda: fake
+    try:
+        response = client.post(
+            "/api/upload",
+            data={"folder": "live/night"},
+            files={"file": ("song.mp3", b"not-really", "audio/mpeg")},
+        )
+        assert response.status_code == 200
+        assert response.json()["file"] == "live/night/song.mp3"
+        assert (tmp_path / "live" / "night" / "song.mp3").is_file()
+        assert fake.added == ["live/night/song.mp3"]
+    finally:
+        main_app.dependency_overrides.pop(get_mpd, None)
+
+
+def test_upload_rejects_a_parent_folder(client: TestClient, tmp_path, monkeypatch) -> None:
+    """Folder paths cannot climb out of the music directory."""
+    monkeypatch.setenv("ROOMZ_LIBRARY_BASE", str(tmp_path))
+    response = client.post(
+        "/api/upload",
+        data={"folder": "../outside"},
+        files={"file": ("song.mp3", b"not-really", "audio/mpeg")},
+    )
+    assert response.status_code == 400
+    assert not (tmp_path.parent / "outside" / "song.mp3").exists()
 
 
 def test_uncaught_exception_handler_logs(

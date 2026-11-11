@@ -11,11 +11,13 @@ LAN-synchronized single-stream audio. MPD plays one timeline. Every browser on t
 
 I created Roomz because I was annoyed that I cannot connect more than 1 BT Speaker to my phone for wider coverage.
 
-Now I can play music throughout the house from multiple devices.
+Now I can play music throughout my house from multiple devices.
 
 I'm pretty sure something else already exists for this. . . but so-what.
 
 ### Future plans
+
+Tracked in [TODO.md](TODO.md).
 
 - Add a centralized control, for managing per device delays and volume from one client.
 - Create a client for rpi or headless devices.
@@ -29,23 +31,37 @@ Roomz is meant to be run on a private LAN/Home network. There is no security bui
 
 MPD is the player. Roomz does not start it.
 
-1. Install MPD (`mpd` from your distro).
-2. Edit the absolute paths in [`mpd/mpd.conf`](mpd/mpd.conf). `music_directory` must be `ROOMZ_LIBRARY_BASE` (default: this repo's `data/`). The FIFO path must be `ROOMZ_FIFO` (default: `/tmp/roomz-audio.fifo`).
-3. `mkdir -p` the playlist directory from that config.
-4. `mpd /absolute/path/to/Roomz/mpd/mpd.conf`
-
-Copy `.env.example` to `.env` if you need a non-default host, port, FIFO, or music directory. The app loads `.env` at startup.
+Template: [mpd/mpd.conf.example](mpd/mpd.conf.example). Your machine-specific copy is `mpd/mpd.conf` (gitignored; **not** `/etc/mpd.conf` unless you put it there yourself):
 
 ```bash
-uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+cp mpd/mpd.conf.example mpd/mpd.conf
 ```
 
-Then open `http://<this-machine-ip>:8000`. `/health` stays unhealthy until MPD answers and the FIFO exists.
+`mpd/mpd.conf` is the only file for the music directory, FIFO, and MPD address. Roomz reads those from it. [.env.example](.env.example) is for Roomz logging, or `ROOMZ_MPD_CONF` when MPD was not started with the repo file.
 
-The stream is 16-bit stereo PCM at 44100 Hz, about 176 KB/s per browser. Headphones and speakers on this server stay quiet unless a browser is open here too: MPD's only output is the FIFO.
+1. Install MPD (`mpd` from your distro).
+2. Edit `mpd/mpd.conf`: replace every `/absolute/path/to/Roomz` with a real path. `music_directory` is where uploads go. The fifo `path` is what Roomz reads. `port` and `bind_to_address` are where Roomz connects.
+3. Create the playlist directory named in that file, for example:
+   ```bash
+   mkdir -p data/playlists
+   ```
+4. Put audio files in `music_directory`, then start MPD with this file:
+   ```bash
+   mpd "$(pwd)/mpd/mpd.conf"
+   ```
+5. Start Roomz from the repo root ([run.py](run.py) or uvicorn):
+   ```bash
+   uv sync
+   uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+   ```
+
+Open `http://<this-machine-ip>:8000` in a browser. [GET /health](app/main.py) returns 200 when that config is readable, MPD answers, and the FIFO exists. The page shows the same problems.
+
+The stream is 16-bit stereo PCM at 44100 Hz, about 176 KB/s per browser ([app/stream.py](app/stream.py)). Headphones and speakers on this server stay quiet unless a browser is open here too: MPD’s only output is the FIFO.
 
 ## Development
+
+From [pyproject.toml](pyproject.toml):
 
 ```bash
 uv sync --extra dev
@@ -54,14 +70,18 @@ uv run ruff check .
 uv run black --check .
 ```
 
+Tests live under [tests/](tests/). Operator and agent notes: [AGENTS.md](AGENTS.md).
+
 ## Multi-device sync test
 
-1. Start MPD, then Roomz, on a machine on your LAN.
-2. On two devices, open `http://<this-machine-ip>:8000`. Click the page once so the browser allows audio.
+1. Start MPD with `mpd/mpd.conf`, then Roomz, on a machine on your LAN.
+2. On two devices, open `http://<this-machine-ip>:8000`. Click the page once so the browser allows audio ([frontend/static/app.js](frontend/static/app.js)).
 3. Add or scan music, press play. Both play the same stream without playhead jumps.
 4. Move **Speaker delay (ms)** on one device. Only that device shifts.
 
 ## Adding music
+
+HTTP API: [app/routers/api.py](app/routers/api.py).
 
 - **Upload** writes into the music directory, asks MPD to rescan, and appends the file to the queue.
 - **Scan** runs an MPD database update.
@@ -73,36 +93,32 @@ The slider is local to the browser (`localStorage`). It changes when the next PC
 
 ## Sync
 
-Each ~20 ms frame carries the server time of its first sample. The browser schedules it on an `AudioContext` at that time, plus a 300 ms buffer, plus this device's delay. A jump in the timestamps (seek, pause, track change) flushes the buffer. Clock offset uses the lowest-RTT sample from a short burst.
+Each ~20 ms frame carries the server time of its first sample. The browser schedules it on an `AudioContext` at that time, plus a 600 ms buffer, plus this device's delay. The extra room in the buffer is so a −250 ms delay still lands ahead of the speakers. A jump in the timestamps (seek, pause, track change) flushes the buffer. Frames that arrive less than about 350 ms late are played back in order from now; anything older is dropped on that browser only.
 
-What the browser will not tell us — output delay past `AudioContext.outputLatency` — is the job of the slider. A tab in the background is not a reliable speaker.
+The clock is measured again every 5 seconds, using the lowest-RTT sample of a short burst. A change under 5 ms is ignored. A change under 150 ms is followed a quarter of the way, so the rooms do not click on every measurement. A larger error snaps. Output delay past `AudioContext.outputLatency` is still the slider's job. A hidden tab is not a reliable speaker.
 
 ## Project structure
 
-```
-Roomz/
-├── pyproject.toml
-├── uv.lock
-├── mpd/mpd.conf       # sample MPD config (FIFO output)
-├── tests/
-├── app/
-│   ├── main.py        # /health, /ws, static mount
-│   ├── mpd_client.py  # MPD protocol
-│   ├── stream.py      # FIFO frames
-│   ├── config.py
-│   ├── mpd_access.py
-│   ├── ws_manager.py
-│   └── routers/api.py # library, upload, scan
-├── data/              # music directory by default
-└── frontend/
-    ├── index.html
-    └── static/
-```
+| Path | Role |
+|------|------|
+| [mpd/mpd.conf.example](mpd/mpd.conf.example) | MPD template; copy to `mpd/mpd.conf` and edit paths |
+| [app/main.py](app/main.py) | `/health`, WebSocket `/ws`, static SPA |
+| [app/mpd_client.py](app/mpd_client.py) | MPD protocol client |
+| [app/stream.py](app/stream.py) | FIFO reader, timestamped PCM frames |
+| [app/config.py](app/config.py) | Music directory, MPD address, and FIFO from `mpd.conf` |
+| [app/ws_manager.py](app/ws_manager.py) | WebSocket fanout |
+| [app/routers/api.py](app/routers/api.py) | `/api/library`, upload, scan |
+| [frontend/index.html](frontend/index.html) | SPA shell |
+| [frontend/static/app.js](frontend/static/app.js) | AudioContext scheduler, UI |
+| [data/](data/) | Music directory only when `mpd.conf` does not set one |
+| [TODO.md](TODO.md) | Gaps and implementation backlog |
+
+Also: [pyproject.toml](pyproject.toml), [uv.lock](uv.lock), [run.py](run.py), [tests/](tests/).
 
 ## Tech stack
 
-- **Player**: MPD, one FIFO output.
-- **Backend**: FastAPI, Uvicorn, aiofiles. Managed with **uv**.
-- **Frontend**: Vanilla HTML/CSS/JS, Web Audio API.
+- **Player**: MPD, one FIFO output (`mpd/mpd.conf` from [mpd/mpd.conf.example](mpd/mpd.conf.example)).
+- **Backend**: FastAPI, Uvicorn, aiofiles. Managed with **uv** ([pyproject.toml](pyproject.toml)).
+- **Frontend**: Vanilla HTML/CSS/JS, Web Audio API ([frontend/](frontend/)).
 
 No auth (LAN-only).

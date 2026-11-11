@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.config import library_base
 from app.mpd_access import get_mpd
@@ -47,6 +47,20 @@ def _mpd_error(exc: MpdError) -> HTTPException:
     return HTTPException(status_code=503, detail=str(exc))
 
 
+def _upload_subdir(raw: str, root: Path) -> tuple[Path, str]:
+    """Directory under the music root, and the MPD path prefix for that directory."""
+    text = raw.strip().replace("\\", "/").strip("/")
+    if not text:
+        return root, ""
+    rel = Path(text)
+    if rel.is_absolute() or any(part in ("", ".", "..") for part in rel.parts):
+        raise HTTPException(status_code=400, detail="Invalid folder")
+    dest = (root / rel).resolve()
+    if not dest.is_relative_to(root.resolve()):
+        raise HTTPException(status_code=400, detail="Invalid folder")
+    return dest, rel.as_posix()
+
+
 @router.get("/library", response_model=LibraryOut)
 async def get_library(mpd: MpdClient = Depends(get_mpd)):
     """List files MPD has indexed under the music directory."""
@@ -77,6 +91,7 @@ async def scan_folder(mpd: MpdClient = Depends(get_mpd)):
 @router.post("/upload", response_model=LibraryTrack)
 async def upload_file(
     file: UploadFile = File(...),
+    folder: str = Form(""),
     mpd: MpdClient = Depends(get_mpd),
 ):
     """Save an audio file into the music directory, rescan, and queue it."""
@@ -97,8 +112,10 @@ async def upload_file(
         raise HTTPException(status_code=400, detail="File must be audio")
 
     root = library_base()
-    root.mkdir(parents=True, exist_ok=True)
-    filepath = root / filename
+    directory, prefix = _upload_subdir(folder, root)
+    directory.mkdir(parents=True, exist_ok=True)
+    filepath = directory / filename
+    stored = f"{prefix}/{filename}" if prefix else filename
     if filepath.exists():
         raise HTTPException(status_code=409, detail="File already exists")
 
@@ -117,7 +134,7 @@ async def upload_file(
 
     try:
         await mpd.update_library()
-        await mpd.add(filename)
+        await mpd.add(stored)
     except MpdError as exc:
         raise _mpd_error(exc) from exc
-    return LibraryTrack(file=filename, title=filename, folder="")
+    return LibraryTrack(file=stored, title=filename, folder=prefix)
