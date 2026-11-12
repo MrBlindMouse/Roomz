@@ -51,6 +51,16 @@
 
 ---
 
+## Continuous sample stream
+
+**Goal:** Playback with no joins between buffers.
+
+The page already copies about one second of chunks into one buffer at the audio context's sample rate. The later step is an AudioWorklet that reads one queue of samples, so nothing is scheduled as a separate clip.
+
+**Touch:** `frontend/static/app.js`.
+
+---
+
 ## Nice-to-have
 
 - Album art in now-playing / Speaker view (tags or folder art)

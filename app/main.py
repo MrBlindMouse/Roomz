@@ -10,7 +10,9 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.client_logs import client_log_ingestion_enabled, client_log_requires_token
 from app.config import (
+    client_log_level_name,
     ensure_dirs,
     fifo_path,
     mpd_config_problems,
@@ -20,7 +22,7 @@ from app.config import (
 )
 from app.logging_config import configure_logging
 from app.mpd_access import mpd_from_app
-from app.mpd_client import MpdClient, MpdError, empty_status, probe_mpd
+from app.mpd_client import MpdClient, MpdError, empty_status, log_mpd_error, probe_mpd
 from app.playlists import (
     active_name,
     clear_active_name,
@@ -29,23 +31,61 @@ from app.playlists import (
     set_active_name,
 )
 from app.routers.api import router as api_router
-from app.stream import fifo_is_ready, supervise_fifo
+from app.stream import (
+    Chunk,
+    PlayWatch,
+    StreamClock,
+    fifo_is_ready,
+    opus_available,
+    pack_frame,
+    supervise_fifo,
+)
 from app.ws_manager import manager
 
 configure_logging()
 logger = logging.getLogger(__name__)
 
 
+def _sync_opus() -> None:
+    """Encode only while some browser has asked for Opus."""
+    clock: StreamClock | None = getattr(app.state, "clock", None)
+    if clock is not None:
+        clock.want_opus(manager.opus_listeners() > 0)
+
+
+async def _broadcast_chunk(chunk: Chunk) -> None:
+    """Fan one chunk out. Each browser gets the codec it asked for."""
+    opus = None
+    if chunk.opus is not None:
+        opus = pack_frame(chunk.epoch, chunk.seq, chunk.media_ts, chunk.opus)
+    await manager.broadcast_chunk(
+        pack_frame(chunk.epoch, chunk.seq, chunk.media_ts, chunk.pcm), opus
+    )
+
+
 async def _publish_status() -> None:
-    """Broadcast MPD status. Audio sync does not use this message."""
+    """Broadcast MPD status. A seek on the playing song starts a new audio epoch."""
     client: MpdClient | None = getattr(app.state, "mpd", None)
     if client is None:
         return
     try:
         payload = await client.snapshot()
-    except Exception:
-        logger.exception("MPD status")
+    except MpdError as exc:
+        log_mpd_error(logger, exc, "MPD status publish skipped")
         return
+    except Exception:
+        logger.exception("MPD status publish failed")
+        return
+    watch: PlayWatch | None = getattr(app.state, "watch", None)
+    clock: StreamClock | None = getattr(app.state, "clock", None)
+    if watch is not None and clock is not None:
+        if watch.observe(
+            payload.get("song_id"),
+            float(payload.get("elapsed") or 0),
+            str(payload.get("state") or "stop"),
+            float(payload.get("server_timestamp") or 0),
+        ):
+            clock.bump()
     await manager.broadcast(payload)
 
 
@@ -57,13 +97,25 @@ async def lifespan(app: FastAPI):
         logger.error("MPD config: %s", problem)
     stop = asyncio.Event()
     client = MpdClient(mpd_host(), mpd_port())
+    clock = StreamClock()
     app.state.mpd = client
+    app.state.clock = clock
+    app.state.watch = PlayWatch()
     idle_task = asyncio.create_task(client.supervise_idle(_publish_status, stop))
-    fifo_task = asyncio.create_task(supervise_fifo(fifo_path(), manager.broadcast_bytes, stop))
+    fifo_task = asyncio.create_task(
+        supervise_fifo(fifo_path(), clock, _broadcast_chunk, stop, manager.opus_listeners)
+    )
+    if client_log_ingestion_enabled():
+        logger.info(
+            "Client logs at %s (token required=%s)",
+            client_log_level_name(),
+            client_log_requires_token(),
+        )
     logger.info("Roomz started")
     try:
         yield
     finally:
+        logger.info("Roomz stopping")
         stop.set()
         idle_task.cancel()
         fifo_task.cancel()
@@ -102,6 +154,11 @@ async def health() -> JSONResponse:
             "fifo": "ok" if fifo_ok else "down",
             "paths": "ok" if not path_problems else "mismatch",
             "problems": problems,
+            "client_log": {
+                "enabled": client_log_ingestion_enabled(),
+                "level": client_log_level_name(),
+                "requires_token": client_log_requires_token(),
+            },
         },
     )
 
@@ -148,6 +205,28 @@ async def uncaught_exception_handler(request: Request, exc: Exception):
 _QUEUE_EDITS = frozenset(
     {"playlist_add", "playlist_remove", "playlist_clear", "playlist_reorder", "play_uri"}
 )
+
+
+async def _resend_chunks(websocket: WebSocket, msg: dict) -> None:
+    """Send chunks a browser still has time to play, in that browser's codec."""
+    clock: StreamClock | None = getattr(app.state, "clock", None)
+    if clock is None:
+        return
+    try:
+        epoch = int(msg.get("epoch"))
+    except (TypeError, ValueError):
+        return
+    seqs = msg.get("seqs")
+    if not isinstance(seqs, list):
+        return
+    codec = manager.codec_of(websocket)
+    for seq in seqs[:50]:
+        try:
+            frame = clock.wire(epoch, int(seq), codec)
+        except (TypeError, ValueError):
+            continue
+        if frame is not None:
+            await manager.send_bytes_to(websocket, frame)
 
 
 async def _autosave(mpd: MpdClient) -> None:
@@ -234,8 +313,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         try:
             snapshot = await mpd_from_app(app).snapshot()
+        except MpdError as exc:
+            log_mpd_error(logger, exc, "initial MPD snapshot failed")
+            snapshot = empty_status()
         except Exception:
-            logger.exception("initial MPD snapshot")
+            logger.exception("initial MPD snapshot failed")
             snapshot = empty_status()
         await manager.send_to(websocket, snapshot)
         while True:
@@ -245,6 +327,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except json.JSONDecodeError:
                 continue
             typ = msg.get("type") or ""
+            if typ == "stream_codec":
+                requested = msg.get("codec")
+                if requested == "opus" and not opus_available():
+                    await manager.send_to(
+                        websocket, {"type": "error", "detail": "Opus is not available"}
+                    )
+                else:
+                    manager.set_codec(websocket, "opus" if requested == "opus" else "pcm")
+                    _sync_opus()
+                continue
+            if typ == "chunk_resend":
+                await _resend_chunks(websocket, msg)
+                continue
             if typ == "sync":
                 client_time = msg.get("client_time")
                 if client_time is not None:
@@ -269,9 +364,29 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     }
                 )
                 continue
+            if typ == "hello":
+                ok, detail = manager.authenticate_client(
+                    websocket, msg.get("token"), msg.get("label")
+                )
+                if ok:
+                    await manager.send_to(
+                        websocket,
+                        {
+                            "type": "hello_ok",
+                            "client_log_level": client_log_level_name() or "OFF",
+                            "client_log_requires_token": client_log_requires_token(),
+                        },
+                    )
+                else:
+                    await manager.send_to(websocket, {"type": "error", "detail": detail})
+                continue
+            if typ == "client_log":
+                manager.ingest_client_logs(websocket, msg)
+                continue
             try:
                 handled = await _run_command(msg)
             except MpdError as exc:
+                log_mpd_error(logger, exc, "MPD command")
                 await manager.send_to(websocket, {"type": "error", "detail": str(exc)})
                 continue
             except Exception:
@@ -282,12 +397,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 continue
             try:
                 await manager.broadcast(await mpd_from_app(app).snapshot())
+            except MpdError as exc:
+                log_mpd_error(logger, exc, "MPD status after command")
             except Exception:
-                logger.exception("MPD status after command")
+                logger.exception("MPD status after command failed")
     except WebSocketDisconnect:
         pass
     finally:
         manager.disconnect(websocket)
+        _sync_opus()
 
 
 app.include_router(api_router)

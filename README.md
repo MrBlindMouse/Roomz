@@ -93,7 +93,9 @@ The slider is local to the browser (`localStorage`). It changes when the next PC
 
 ## Sync
 
-Each ~20 ms frame carries the server time of its first sample. The browser schedules it on an `AudioContext` at that time, plus a 600 ms buffer, plus this device's delay. The extra room in the buffer is so a −250 ms delay still lands ahead of the speakers. A jump in the timestamps (seek, pause, track change) flushes the buffer. Frames that arrive less than about 350 ms late are played back in order from now; anything older is dropped on that browser only.
+Each 100 ms chunk carries an epoch, a sequence number, and the server time of its first sample. The browser places the first chunk of an epoch on an `AudioContext` at that time, plus a 5 second lead, plus this device's delay. About one second of following chunks is copied into a single buffer at the sound card's sample rate, and those longer buffers play as one chain. The lead is also how long the server keeps each chunk: a browser that missed one asks for it before it is due. Pause, resume, and a seek flush the chain. A normal track change does not. Pressing play, seek, or resume is silent for about 5 seconds while the lead fills.
+
+**Slow network** on one browser asks the server for Opus (five 20 ms frames per chunk, about 64 kbps) instead of raw PCM. Other speakers stay on PCM. If Opus is not available, that browser stays on PCM.
 
 The clock is measured again every 5 seconds, using the lowest-RTT sample of a short burst. A change under 5 ms is ignored. A change under 150 ms is followed a quarter of the way, so the rooms do not click on every measurement. A larger error snaps. Output delay past `AudioContext.outputLatency` is still the slider's job. A hidden tab is not a reliable speaker.
 
@@ -104,7 +106,7 @@ The clock is measured again every 5 seconds, using the lowest-RTT sample of a sh
 | [mpd/mpd.conf.example](mpd/mpd.conf.example) | MPD template; copy to `mpd/mpd.conf` and edit paths |
 | [app/main.py](app/main.py) | `/health`, WebSocket `/ws`, static SPA |
 | [app/mpd_client.py](app/mpd_client.py) | MPD protocol client |
-| [app/stream.py](app/stream.py) | FIFO reader, timestamped PCM frames |
+| [app/stream.py](app/stream.py) | FIFO reader, 100 ms chunks, Opus payload |
 | [app/config.py](app/config.py) | Music directory, MPD address, and FIFO from `mpd.conf` |
 | [app/ws_manager.py](app/ws_manager.py) | WebSocket fanout |
 | [app/routers/api.py](app/routers/api.py) | `/api/library`, upload, scan |

@@ -43,3 +43,5 @@ def configure_logging() -> None:
     else:
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root.addHandler(handler)
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).setLevel(level)

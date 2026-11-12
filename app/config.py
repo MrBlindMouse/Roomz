@@ -4,6 +4,7 @@ Music directory, FIFO, and MPD address come from mpd.conf. Environment variables
 override those only when set. Roomz does not start MPD.
 """
 
+import logging
 import os
 import re
 import time
@@ -172,3 +173,25 @@ def ensure_dirs() -> None:
 def server_timestamp_utc() -> float:
     """Unix seconds for WebSocket sync and frame stamping."""
     return time.time()
+
+
+def client_log_level_name() -> str | None:
+    """Minimum client log level accepted, or None when ingestion is off."""
+    raw = os.environ.get("CLIENT_LOG_LEVEL", "").strip().upper()
+    if not raw or raw in {"OFF", "NONE", "DISABLED"}:
+        return None
+    return raw
+
+
+def client_log_level() -> int:
+    """logging module level for client log filtering."""
+    name = client_log_level_name()
+    if name is None:
+        return logging.CRITICAL + 1
+    return getattr(logging, name, logging.WARNING)
+
+
+def roomz_client_token() -> str | None:
+    """Shared secret for WebSocket hello. None means logs need no token."""
+    raw = os.environ.get("ROOMZ_CLIENT_TOKEN", "").strip()
+    return raw or None

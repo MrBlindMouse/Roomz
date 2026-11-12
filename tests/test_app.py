@@ -36,7 +36,7 @@ class FakeMpd:
             "repeat": 0,
             "server_timestamp": 0.0,
             "playlist": [],
-            "stream": {"rate": 44100, "channels": 2, "frame_samples": 882},
+            "stream": {"rate": 44100, "channels": 2, "frame_samples": 4410, "codecs": ["pcm"]},
         }
 
     async def play(self) -> None:
@@ -130,12 +130,18 @@ def test_health_ok_when_mpd_and_fifo_are_up(client: TestClient, tmp_path, monkey
     try:
         response = client.get("/health")
         assert response.status_code == 200
-        assert response.json() == {
+        body = response.json()
+        assert body == {
             "status": "ok",
             "mpd": "ok",
             "fifo": "ok",
             "paths": "ok",
             "problems": [],
+            "client_log": {
+                "enabled": False,
+                "level": None,
+                "requires_token": False,
+            },
         }
     finally:
         stop.set()

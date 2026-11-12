@@ -14,13 +14,13 @@ Browser output delay past `AudioContext.outputLatency` is what the slider is for
 
 - **Backend**: FastAPI, Uvicorn. Dependencies managed with **uv** (`pyproject.toml`, `uv.lock`). No Docker. MPD is a separate process (local `mpd/mpd.conf` from `mpd/mpd.conf.example`); Roomz does not start it.
 - **Frontend**: Vanilla HTML/CSS/JS, single SPA at `/` (StaticFiles with `html=True`). CSS and JS live in `frontend/static/`; layered vanilla CSS (reset, base, colors, layout, components); no Tailwind. Web Audio API schedules the PCM frames.
-- **Audio**: One music directory, taken from `music_directory` in `mpd/mpd.conf`. MPD indexes it. PCM is 44100 Hz, 16-bit stereo, ~20 ms frames, over the WebSocket.
+- **Audio**: One music directory, taken from `music_directory` in `mpd/mpd.conf`. MPD indexes it. PCM is 44100 Hz, 16-bit stereo, 100 ms chunks, over the WebSocket. Opus is an optional per-browser payload for a slow link; raw PCM stays the default.
 
 ## Key modules
 
 - `app/main.py` — FastAPI app, `GET /health` (MPD greeting and FIFO), `WebSocket /ws` (JSON control + binary PCM), static mount.
 - `app/mpd_client.py` — Async MPD text protocol: commands on one socket, `idle` on another.
-- `app/stream.py` — FIFO reader, frame size, timestamp packing.
+- `app/stream.py` — FIFO reader, 100 ms chunks, epoch, and the 5 s ring.
 - `app/config.py` — Reads music directory, MPD host/port, and FIFO from `mpd.conf`. `server_timestamp_utc()`.
 - `app/ws_manager.py` — Global `ConnectionManager`: text and binary broadcast.
 - `app/mpd_access.py` — Shared `app.state.mpd` lookup for HTTP and WebSocket.

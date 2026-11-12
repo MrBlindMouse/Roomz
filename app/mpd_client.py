@@ -19,6 +19,22 @@ class MpdError(Exception):
     """MPD ACK, or the daemon is unreachable."""
 
 
+_COMMAND_RETRIES = 2
+
+
+def _transient_mpd_error(exc: MpdError) -> bool:
+    """True when reconnecting and resending the command might succeed."""
+    return not str(exc).startswith("ACK")
+
+
+def log_mpd_error(log: logging.Logger, exc: MpdError, context: str) -> None:
+    """ACK lines are normal command failures; everything else is connectivity."""
+    if str(exc).startswith("ACK"):
+        log.info("%s: %s", context, exc)
+    else:
+        log.warning("%s: %s", context, exc)
+
+
 def quote_arg(value: str) -> str:
     """Quote a protocol argument. MPD uses double quotes and backslash escapes."""
     escaped = value.replace("\\", "\\\\").replace('"', '\\"')
@@ -339,8 +355,10 @@ class MpdClient:
                 await self._run_idle(on_change, stop)
             except asyncio.CancelledError:
                 raise
+            except MpdError as exc:
+                log_mpd_error(logger, exc, "MPD idle disconnected")
             except Exception as exc:
-                logger.info("MPD idle disconnected: %s", exc)
+                logger.warning("MPD idle disconnected: %s", exc)
             try:
                 await asyncio.wait_for(stop.wait(), 1.0)
             except asyncio.TimeoutError:
@@ -380,18 +398,28 @@ class MpdClient:
         return await self._request(payload)
 
     async def _request(self, payload: str) -> list[str]:
+        last: MpdError | None = None
         async with self._lock:
-            await self._ensure()
-            assert self._writer is not None and self._reader is not None
-            try:
-                self._writer.write(payload.encode())
-                await self._writer.drain()
-                return await _read_response(self._reader)
-            except MpdError:
-                raise
-            except Exception as exc:
-                await self._drop()
-                raise MpdError("MPD is down") from exc
+            for attempt in range(_COMMAND_RETRIES):
+                try:
+                    await self._ensure()
+                    assert self._writer is not None and self._reader is not None
+                    self._writer.write(payload.encode())
+                    await self._writer.drain()
+                    return await _read_response(self._reader)
+                except MpdError as exc:
+                    last = exc
+                    await self._drop()
+                    if attempt + 1 < _COMMAND_RETRIES and _transient_mpd_error(exc):
+                        log_mpd_error(logger, exc, "MPD command connection lost")
+                        continue
+                    raise
+                except Exception as exc:
+                    await self._drop()
+                    raise MpdError("MPD is down") from exc
+        if last is not None:
+            raise last
+        raise MpdError("MPD is down")
 
     async def _ensure(self) -> None:
         if self._writer is not None and not self._writer.is_closing():

@@ -4,6 +4,8 @@
  *
  * ponytail: browser output delay past AudioContext.outputLatency is what the
  * speaker slider is for. A hidden tab is not a speaker. Upgrade path: a native client.
+ * Playback stitches about one second of chunks into one buffer. A continuous
+ * sample queue (AudioWorklet) is the later step if those joins are still audible.
  */
 (function () {
   'use strict';
@@ -12,9 +14,16 @@
   const API_BASE = '';
   const DELAY_KEY = 'roomz.delayMs';
   const SPEAKER_KEY = 'roomz.speaker';
-  const BASE_BUFFER_SEC = 0.6;
-  const LOOKAHEAD_SEC = 0.2;
-  const CATCHUP_SEC = 0.35;
+  const SLOW_KEY = 'roomz.slowNetwork';
+  const CLIENT_TOKEN_KEY = 'roomz.clientToken';
+  const CLIENT_LABEL_KEY = 'roomz.clientLabel';
+  const LOG_FLUSH_MS = 300;
+  const LOG_LEVEL_RANK = { debug: 10, info: 20, warn: 30, warning: 30, error: 40 };
+  const BASE_BUFFER_SEC = 5;
+  const SEEK_SEC = 0.5;
+  const RESEND_MS = 200;
+  const STITCH_CHUNKS = 10;
+  const STITCH_LEAD = 0.3;
   const SYNC_SAMPLES = 5;
   const SYNC_GAP_MS = 40;
   const SYNC_IGNORE_MS = 5;
@@ -27,9 +36,9 @@
 
   let clockOffsetMs = 0;
   let clockReady = false;
-  let catchupUntil = 0;
   let burstBestRtt = Infinity;
   let delayCompensationMs = 0;
+  let codec = 'pcm';
 
   let playlist = [];
   let storedPlaylist = '';
@@ -48,19 +57,37 @@
 
   let streamRate = 44100;
   let streamChannels = 2;
-  let frameSamples = 882;
+  let frameSamples = 4410;
 
   let audioCtx = null;
+  let audioRate = 0;
   let gain = null;
-  let pending = [];
+  let hold = new Map();
+  let opusIncoming = new Map();
   let scheduled = [];
-  let lastServerTs = null;
+  let originPlayAt = null;
+  let originSeq = 0;
+  let originEpoch = null;
+  let nextSeq = null;
+  let nextDecodeSeq = null;
+  let ignoreEpoch = null;
+  let lastResendAt = 0;
+  let decoder = null;
+  let opusOutputs = null;
+  let opusTimestampUs = 0;
+  let decoding = false;
 
   let libraryTracks = [];
   let libraryPanelOpen = false;
   let chatPanelOpen = false;
   let scanInProgress = false;
   let wakeLock = null;
+  let clientLogEnabled = false;
+  let clientLogMinRank = 90;
+  let clientLogRequiresToken = false;
+  let clientLogAuthed = false;
+  let clientLogBuffer = [];
+  let clientLogFlushTimer = null;
 
   const $ = (id) => document.getElementById(id);
   const el = {
@@ -99,14 +126,96 @@
     btnMenuLibrary: $('btn-menu-library'),
     btnMenuChat: $('btn-menu-chat'),
     btnSpeaker: $('btn-speaker'),
+    slowNetwork: $('slow-network'),
     libraryAllMedia: $('library-all-media'),
     chatMessages: $('chat-messages'),
     chatAuthor: $('chat-author'),
     chatInput: $('chat-input'),
     chatSend: $('chat-send'),
+    clientLabel: $('client-label'),
+    clientToken: $('client-token'),
   };
 
+  (function readClientTokenFromQuery() {
+    const token = new URLSearchParams(location.search).get('client_token');
+    if (token) {
+      localStorage.setItem(CLIENT_TOKEN_KEY, token);
+    }
+  })();
+
+  function storedClientToken() {
+    if (el.clientToken && el.clientToken.value.trim()) {
+      return el.clientToken.value.trim();
+    }
+    return localStorage.getItem(CLIENT_TOKEN_KEY) || '';
+  }
+
+  function storedClientLabel() {
+    if (el.clientLabel && el.clientLabel.value.trim()) {
+      return el.clientLabel.value.trim();
+    }
+    return localStorage.getItem(CLIENT_LABEL_KEY) || '';
+  }
+
+  function persistClientCredentials() {
+    if (el.clientToken) {
+      localStorage.setItem(CLIENT_TOKEN_KEY, el.clientToken.value.trim());
+    }
+    if (el.clientLabel) {
+      localStorage.setItem(CLIENT_LABEL_KEY, el.clientLabel.value.trim());
+    }
+  }
+
+  function applyClientLogPolicy(body) {
+    const policy = body && body.client_log;
+    if (!policy || !policy.enabled || !policy.level) {
+      clientLogEnabled = false;
+      return;
+    }
+    clientLogEnabled = true;
+    const rank = LOG_LEVEL_RANK[String(policy.level).toLowerCase()];
+    clientLogMinRank = rank != null ? rank : 30;
+    clientLogRequiresToken = Boolean(policy.requires_token);
+    clientLogAuthed = !clientLogRequiresToken;
+  }
+
+  function queueClientLog(level, context, message) {
+    if (!clientLogEnabled) return;
+    const rank = LOG_LEVEL_RANK[level];
+    if (rank == null || rank < clientLogMinRank) return;
+    if (clientLogRequiresToken && !clientLogAuthed) return;
+    clientLogBuffer.push({ level, context: context || '', message: String(message).slice(0, 2000) });
+    if (clientLogBuffer.length > 40) {
+      clientLogBuffer = clientLogBuffer.slice(-40);
+    }
+    scheduleClientLogFlush();
+  }
+
+  function scheduleClientLogFlush() {
+    if (clientLogFlushTimer) return;
+    clientLogFlushTimer = setTimeout(flushClientLogs, LOG_FLUSH_MS);
+  }
+
+  function flushClientLogs() {
+    clientLogFlushTimer = null;
+    if (!clientLogEnabled || !clientLogBuffer.length) return;
+    if (clientLogRequiresToken && !clientLogAuthed) return;
+    const entries = clientLogBuffer.splice(0, 20);
+    sendWs({ type: 'client_log', entries });
+  }
+
+  function sendClientHello() {
+    if (!clientLogEnabled) return;
+    persistClientCredentials();
+    const payload = { type: 'hello', label: storedClientLabel() || undefined };
+    const token = storedClientToken();
+    if (token) payload.token = token;
+    sendWs(payload);
+  }
+
   function reportError(context, err, userMessage) {
+    const detail = err && err.message ? err.message : String(err);
+    queueClientLog('error', context, detail);
     console.error(context, err);
     if (userMessage != null && userMessage !== '' && el.libraryError) {
       el.libraryError.textContent = userMessage;
@@ -134,6 +243,7 @@
       const response = await fetch(`${API_BASE}/health`);
       const body = await response.json();
       const problems = Array.isArray(body.problems) ? body.problems : [];
+      applyClientLogPolicy(body);
       if (!problems.length) {
         el.statusBanner.textContent = '';
         el.statusBanner.classList.add('is-hidden');
@@ -142,6 +252,7 @@
       el.statusBanner.textContent = problems.join(' ');
       el.statusBanner.classList.remove('is-hidden');
     } catch (err) {
+      queueClientLog('error', 'Health check', err && err.message ? err.message : String(err));
       console.error('Health check', err);
       el.statusBanner.textContent = 'Cannot reach the Roomz server.';
       el.statusBanner.classList.remove('is-hidden');
@@ -259,11 +370,24 @@
   }
 
   function applyStatus(msg) {
+    const prevState = playbackState;
+    const prevElapsed = elapsed;
+    const prevSong = songId;
+    const prevAt = statusServerTs;
     playbackState = msg.state || 'stop';
     elapsed = msg.elapsed || 0;
     duration = msg.duration || 0;
     statusServerTs = msg.server_timestamp || clientNowSeconds();
     songId = msg.song_id ?? null;
+    if (playbackState !== 'play' || prevState !== 'play') {
+      flushAudio();
+    } else if (prevSong != null && songId === prevSong && Number.isFinite(prevAt)) {
+      const expected = prevElapsed + (statusServerTs - prevAt);
+      if (Math.abs(elapsed - expected) > SEEK_SEC) {
+        ignoreEpoch = originEpoch;
+        flushAudio();
+      }
+    }
     title = msg.title || '';
     artist = msg.artist || '';
     randomOn = !!msg.random;
@@ -532,6 +656,7 @@
     if (!clockReady) {
       clockOffsetMs = sample;
       clockReady = true;
+      scheduleChain();
       return;
     }
     const delta = sample - clockOffsetMs;
@@ -550,18 +675,27 @@
     ws.binaryType = 'arraybuffer';
     ws.onopen = () => {
       el.wsStatus.textContent = 'Connected';
+      clientLogAuthed = false;
+      sendClientHello();
+      sendWs({ type: 'stream_codec', codec });
       startClockSync();
       if (syncInterval) clearInterval(syncInterval);
       syncInterval = setInterval(startClockSync, 5000);
     };
     ws.onclose = () => {
       el.wsStatus.textContent = 'Disconnected';
+      clientLogAuthed = false;
+      if (clientLogFlushTimer) {
+        clearTimeout(clientLogFlushTimer);
+        clientLogFlushTimer = null;
+      }
+      flushAudio();
       if (syncInterval) clearInterval(syncInterval);
       reconnectTimer = setTimeout(connectWs, 2000);
     };
     ws.onmessage = (event) => {
       if (typeof event.data !== 'string') {
-        onPcm(event.data);
+        onAudio(event.data);
         return;
       }
       try {
@@ -583,6 +717,15 @@
       onSyncResponse(msg);
       return;
     }
+    if (typ === 'hello_ok') {
+      clientLogAuthed = true;
+      if (msg.client_log_level) {
+        const rank = LOG_LEVEL_RANK[String(msg.client_log_level).toLowerCase()];
+        if (rank != null) clientLogMinRank = rank;
+      }
+      flushClientLogs();
+      return;
+    }
     if (typ === 'chat') {
       const ul = el.chatMessages;
       const li = document.createElement('li');
@@ -593,15 +736,43 @@
       return;
     }
     if (typ === 'error' && msg.detail) {
+      queueClientLog('warn', 'Server', msg.detail);
       console.error('MPD', msg.detail);
+      if (String(msg.detail).indexOf('Opus is not available') !== -1) {
+        setSlowNetwork(false);
+      }
       showHomeError(String(msg.detail));
     }
   }
 
+  function chunkSec() {
+    return frameSamples / streamRate;
+  }
+
+  function contextRate() {
+    return codec === 'opus' ? 48000 : streamRate;
+  }
+
+  function opusSupported() {
+    return typeof window.AudioDecoder === 'function' && typeof window.EncodedAudioChunk === 'function';
+  }
+
   function ensureAudio() {
-    if (audioCtx) return;
+    const rate = contextRate();
+    if (audioCtx && audioRate === rate) return;
+    if (audioCtx) {
+      const previous = audioCtx;
+      audioCtx = null;
+      gain = null;
+      previous.close();
+    }
+    audioRate = rate;
     const Ctx = window.AudioContext || window.webkitAudioContext;
-    audioCtx = new Ctx();
+    try {
+      audioCtx = new Ctx({ sampleRate: rate });
+    } catch (err) {
+      audioCtx = new Ctx();
+    }
     gain = audioCtx.createGain();
     gain.gain.value = el.volumeSlider ? el.volumeSlider.value / 100 : 1;
     gain.connect(audioCtx.destination);
@@ -624,8 +795,141 @@
     );
   }
 
-  function pcmToBuffer(arrayBuffer) {
-    const view = new Int16Array(arrayBuffer, 8);
+  function opusHead() {
+    const head = new Uint8Array(19);
+    head.set([0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, 1, 2]);
+    const view = new DataView(head.buffer);
+    view.setUint16(10, 0, true);
+    view.setUint32(12, 48000, true);
+    return head.buffer;
+  }
+
+  function resetDecoder() {
+    opusTimestampUs = 0;
+    if (!decoder) return;
+    try {
+      decoder.close();
+    } catch (err) {
+      /* already closed */
+    }
+    decoder = null;
+  }
+
+  function ensureDecoder() {
+    if (decoder) return true;
+    if (!opusSupported()) return false;
+    decoder = new AudioDecoder({
+      output: (data) => {
+        if (opusOutputs) opusOutputs.push(data);
+        else data.close();
+      },
+      error: (err) => reportError('Opus decode', err),
+    });
+    try {
+      decoder.configure({
+        codec: 'opus',
+        sampleRate: 48000,
+        numberOfChannels: 2,
+        description: opusHead(),
+      });
+    } catch (err) {
+      reportError('Opus decode', err);
+      resetDecoder();
+      return false;
+    }
+    return true;
+  }
+
+  function splitOpus(payload) {
+    const view = new DataView(payload);
+    const packets = [];
+    let offset = 0;
+    while (offset + 2 <= payload.byteLength && packets.length < 5) {
+      const len = view.getUint16(offset, true);
+      offset += 2;
+      if (len < 1 || offset + len > payload.byteLength) break;
+      packets.push(payload.slice(offset, offset + len));
+      offset += len;
+    }
+    return packets;
+  }
+
+  async function copyChannel(data, channel) {
+    const frames = data.numberOfFrames;
+    const channels = data.numberOfChannels || 2;
+    if (data.format === 'f32-planar') {
+      const planar = new Float32Array(frames);
+      const copied = data.copyTo(planar, { planeIndex: channel });
+      if (copied && typeof copied.then === 'function') await copied;
+      return planar;
+    }
+    const interleaved = new Float32Array(frames * channels);
+    const copied = data.copyTo(interleaved, { planeIndex: 0 });
+    if (copied && typeof copied.then === 'function') await copied;
+    const out = new Float32Array(frames);
+    for (let i = 0; i < frames; i++) out[i] = interleaved[i * channels + channel];
+    return out;
+  }
+
+  async function audioBufferFromOpus(datas) {
+    let total = 0;
+    for (const data of datas) total += data.numberOfFrames;
+    if (!total) {
+      datas.forEach((data) => data.close());
+      return null;
+    }
+    const frames = 4800;
+    const buffer = audioCtx.createBuffer(2, frames, 48000);
+    let offset = 0;
+    for (const data of datas) {
+      const count = Math.min(data.numberOfFrames, frames - offset);
+      if (count > 0) {
+        for (let channel = 0; channel < 2; channel++) {
+          const samples = await copyChannel(data, channel);
+          buffer.getChannelData(channel).set(samples.subarray(0, count), offset);
+        }
+        offset += count;
+      }
+      data.close();
+      if (offset >= frames) {
+        datas.slice(datas.indexOf(data) + 1).forEach((rest) => rest.close());
+        break;
+      }
+    }
+    return buffer;
+  }
+
+  async function decodeOpusChunk(payload) {
+    if (!ensureDecoder()) return null;
+    const packets = splitOpus(payload);
+    if (!packets.length) return null;
+    const outputs = [];
+    opusOutputs = outputs;
+    try {
+      for (let i = 0; i < packets.length; i++) {
+        decoder.decode(new EncodedAudioChunk({
+          type: 'key',
+          timestamp: opusTimestampUs,
+          data: packets[i],
+        }));
+        opusTimestampUs += 20000;
+      }
+      await decoder.flush();
+    } catch (err) {
+      reportError('Opus decode', err);
+      outputs.forEach((data) => data.close());
+      resetDecoder();
+      return null;
+    } finally {
+      if (opusOutputs === outputs) opusOutputs = null;
+    }
+    return audioBufferFromOpus(outputs);
+  }
+
+  function pcmToBuffer(payload) {
+    const needed = frameSamples * streamChannels;
+    if (payload.byteLength < needed * 2) return null;
+    const view = new Int16Array(payload);
     const buffer = audioCtx.createBuffer(streamChannels, frameSamples, streamRate);
     for (let channel = 0; channel < streamChannels; channel++) {
       const out = buffer.getChannelData(channel);
@@ -637,7 +941,8 @@
   }
 
   function flushAudio() {
-    pending = [];
+    hold = new Map();
+    opusIncoming = new Map();
     for (const item of scheduled) {
       try {
         item.src.stop();
@@ -646,97 +951,285 @@
       }
     }
     scheduled = [];
+    originPlayAt = null;
+    originSeq = 0;
+    nextSeq = null;
+    originEpoch = null;
+    nextDecodeSeq = null;
+    resetDecoder();
   }
 
-  function startFrame(item, when) {
+  function remember(item) {
+    if (originEpoch != null && item.epoch !== originEpoch) return;
+    hold.set(item.seq, item);
+    while (hold.size > 50) {
+      let oldest = null;
+      for (const seq of hold.keys()) {
+        if (oldest == null || seq < oldest) oldest = seq;
+      }
+      hold.delete(oldest);
+    }
+  }
+
+  function writeSpan(input, output, offset, outFrames) {
+    if (outFrames <= 0) return;
+    if (input.length === outFrames) {
+      output.set(input.subarray(0, outFrames), offset);
+      return;
+    }
+    const last = input.length - 1;
+    if (last <= 0) return;
+    const scale = last / Math.max(outFrames - 1, 1);
+    for (let i = 0; i < outFrames; i++) {
+      const pos = i * scale;
+      const left = pos | 0;
+      const frac = pos - left;
+      const right = left < last ? left + 1 : left;
+      output[offset + i] = input[left] + (input[right] - input[left]) * frac;
+    }
+  }
+
+  function stitchBuffers(run) {
+    const rate = audioCtx.sampleRate;
+    const seconds = run.length * chunkSec();
+    const length = Math.max(1, Math.round(seconds * rate));
+    const channels = streamChannels;
+    const buffer = audioCtx.createBuffer(channels, length, rate);
+    const span = Math.round(chunkSec() * rate);
+    for (let index = 0; index < run.length; index++) {
+      const source = run[index].buffer;
+      const start = Math.min(index * span, length);
+      const frames = Math.min(span, length - start);
+      for (let channel = 0; channel < channels; channel++) {
+        if (channel >= source.numberOfChannels) break;
+        writeSpan(source.getChannelData(channel), buffer.getChannelData(channel), start, frames);
+      }
+    }
+    return buffer;
+  }
+
+  function startStitch(seq, count, buffer, when) {
     const src = audioCtx.createBufferSource();
-    src.buffer = item.buffer;
+    src.buffer = buffer;
     src.connect(gain);
-    src.start(when);
-    const entry = { src, when, serverTs: item.serverTs, buffer: item.buffer };
+    const entry = { src, when, seq, count, buffer };
     scheduled.push(entry);
+    src.start(when);
     src.onended = () => {
+      if (entry.src !== src) return;
       const index = scheduled.indexOf(entry);
       if (index >= 0) scheduled.splice(index, 1);
     };
+    return entry;
   }
 
-  function schedulePending() {
-    if (!audioCtx) return;
+  function skipMissing(seq) {
+    opusIncoming.delete(seq);
+    if (codec !== 'opus') return;
+    nextDecodeSeq = seq + 1;
+    resetDecoder();
+  }
+
+  function requestMissing(when, now) {
+    let later = false;
+    let highest = nextSeq;
+    for (const seq of hold.keys()) {
+      if (seq > nextSeq) later = true;
+      if (seq > highest) highest = seq;
+    }
+    if (!later && when - now >= 1) return;
+    const nowMs = performance.now();
+    if (nowMs - lastResendAt < RESEND_MS) return;
+    const missing = [];
+    const end = later ? highest : nextSeq + 1;
+    for (let seq = nextSeq; seq < end; seq++) {
+      if (!hold.has(seq)) missing.push(seq);
+    }
+    if (!missing.length) return;
+    lastResendAt = nowMs;
+    sendWs({ type: 'chunk_resend', epoch: originEpoch, seqs: missing.slice(0, 50) });
+  }
+
+  function readyRun() {
+    const run = [];
+    let seq = nextSeq;
+    while (run.length < STITCH_CHUNKS && hold.has(seq)) {
+      run.push(hold.get(seq));
+      seq += 1;
+    }
+    return run;
+  }
+
+  function laterThan(seq) {
+    for (const held of hold.keys()) {
+      if (held >= seq) return true;
+    }
+    return false;
+  }
+
+  // ponytail: stitches are one second at the context rate. Upgrade path: an
+  // AudioWorklet reading one sample queue, noted in TODO.md.
+  function scheduleChain() {
+    if (!audioCtx || !clockReady || originEpoch == null) return;
     const now = audioCtx.currentTime;
-    const frameSec = frameSamples / streamRate;
-    const still = [];
-    let catchupAt = null;
-    for (const item of pending) {
-      const target = playAtFor(item.serverTs);
-      const late = now - target;
-      if (late > CATCHUP_SEC) continue;
-      let when = target;
-      if (late > 0) {
-        if (catchupAt == null) catchupAt = now + 0.01;
-        if (catchupAt - now > CATCHUP_SEC) continue;
-        when = catchupAt;
-        catchupAt += frameSec;
-        catchupUntil = Math.max(catchupUntil, when);
+    const frameSec = chunkSec();
+    let skips = 0;
+    for (;;) {
+      if (nextSeq == null) {
+        if (!hold.size) return;
+        let first = null;
+        for (const seq of hold.keys()) {
+          if (first == null || seq < first) first = seq;
+        }
+        nextSeq = first;
+        originSeq = first;
+        originPlayAt = playAtFor(hold.get(first).serverTs);
       }
-      if (when - now > LOOKAHEAD_SEC) {
-        still.push(item);
+      const when = originPlayAt + (nextSeq - originSeq) * frameSec;
+      if (!hold.has(nextSeq)) {
+        if (when < now) {
+          skipMissing(nextSeq);
+          nextSeq += 1;
+          if (++skips > 50) return;
+          continue;
+        }
+        requestMissing(when, now);
+        return;
+      }
+      const run = readyRun();
+      const duration = run.length * frameSec;
+      if (when + duration < now) {
+        for (const item of run) hold.delete(item.seq);
+        nextSeq += run.length;
         continue;
       }
-      startFrame(item, when);
+      // Wait for a full second unless a hole is already behind this run, or the speaker is close.
+      if (run.length < STITCH_CHUNKS && !laterThan(nextSeq + run.length) && when - now > STITCH_LEAD) return;
+      for (const item of run) hold.delete(item.seq);
+      const startAt = when > now ? when : now + 0.02;
+      startStitch(run[0].seq, run.length, stitchBuffers(run), startAt);
+      nextSeq += run.length;
     }
-    pending = still;
   }
 
   function syncLabel() {
     if (!clockReady) return 'Syncing clock';
-    const frames = pending.length + scheduled.length;
-    if (audioCtx && audioCtx.currentTime < catchupUntil) return 'Catching up';
-    if (frames === 0) return playbackState === 'play' ? 'Buffer empty' : 'Idle';
-    const ms = Math.round(frames * (frameSamples / streamRate) * 1000);
+    let chunks = hold.size;
+    for (const item of scheduled) chunks += item.count || 1;
+    if (chunks === 0) return playbackState === 'play' ? 'Buffer empty' : 'Idle';
+    const ms = Math.round(chunks * chunkSec() * 1000);
     return `Buffer ${ms} ms`;
   }
 
-  function onPcm(arrayBuffer) {
-    ensureAudio();
-    const needed = 8 + frameSamples * streamChannels * 2;
-    if (arrayBuffer.byteLength < needed) return;
-    const serverTs = new DataView(arrayBuffer).getFloat64(0, true);
-    const frameSec = frameSamples / streamRate;
-    if (lastServerTs != null && Math.abs(serverTs - (lastServerTs + frameSec)) > frameSec * 1.5) {
-      flushAudio();
+  function parseFrame(arrayBuffer) {
+    if (arrayBuffer.byteLength < 16) return null;
+    const view = new DataView(arrayBuffer);
+    const payload = arrayBuffer.slice(16);
+    const needed = codec === 'opus' ? 1 : frameSamples * streamChannels * 2;
+    if (payload.byteLength < needed) return null;
+    return {
+      epoch: view.getUint32(0, true),
+      seq: view.getUint32(4, true),
+      serverTs: view.getFloat64(8, true),
+      payload,
+    };
+  }
+
+  async function drainOpus() {
+    if (decoding) return;
+    decoding = true;
+    try {
+      while (opusIncoming.size) {
+        if (nextDecodeSeq == null) nextDecodeSeq = Math.min(...opusIncoming.keys());
+        if (!opusIncoming.has(nextDecodeSeq)) break;
+        const frame = opusIncoming.get(nextDecodeSeq);
+        opusIncoming.delete(nextDecodeSeq);
+        const buffer = await decodeOpusChunk(frame.payload);
+        nextDecodeSeq += 1;
+        if (!buffer || playbackState !== 'play' || frame.epoch !== originEpoch) continue;
+        remember({ seq: frame.seq, serverTs: frame.serverTs, epoch: frame.epoch, buffer });
+        if (clockReady) scheduleChain();
+      }
+    } finally {
+      decoding = false;
+      if (nextDecodeSeq != null && opusIncoming.has(nextDecodeSeq)) drainOpus();
     }
-    lastServerTs = serverTs;
-    pending.push({ serverTs, buffer: pcmToBuffer(arrayBuffer) });
-    if (!clockReady) {
-      const maxPending = Math.ceil(BASE_BUFFER_SEC / frameSec) + 2;
-      if (pending.length > maxPending) pending.splice(0, pending.length - maxPending);
+  }
+
+  function acceptFrame(frame) {
+    if (playbackState !== 'play') return;
+    if (ignoreEpoch != null && frame.epoch === ignoreEpoch) return;
+    if (ignoreEpoch != null) ignoreEpoch = null;
+    if (originEpoch != null && frame.epoch !== originEpoch) flushAudio();
+    originEpoch = frame.epoch;
+    if (codec === 'opus') {
+      opusIncoming.set(frame.seq, frame);
+      drainOpus();
       return;
     }
-    schedulePending();
+    const buffer = pcmToBuffer(frame.payload);
+    if (!buffer) return;
+    remember({ seq: frame.seq, serverTs: frame.serverTs, epoch: frame.epoch, buffer });
+    if (clockReady) scheduleChain();
+  }
+
+  function onAudio(arrayBuffer) {
+    ensureAudio();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const frame = parseFrame(arrayBuffer);
+    if (!frame) return;
+    acceptFrame(frame);
   }
 
   function onDelayInput() {
+    const previous = delayCompensationMs;
     delayCompensationMs = parseInt(el.delaySlider.value, 10) || 0;
     el.delayValue.textContent = String(delayCompensationMs);
     localStorage.setItem(DELAY_KEY, String(delayCompensationMs));
-    if (!audioCtx) return;
+    if (!audioCtx || originPlayAt == null) return;
+    originPlayAt += (delayCompensationMs - previous) / 1000;
     const now = audioCtx.currentTime;
-    const keep = [];
+    const frameSec = chunkSec();
     for (const item of scheduled) {
-      if (item.when > now + 0.02) {
-        try {
-          item.src.stop();
-        } catch (err) {
-          /* already started */
-        }
-        pending.push({ serverTs: item.serverTs, buffer: item.buffer });
-      } else {
-        keep.push(item);
+      if (item.when <= now + 0.02) continue;
+      try {
+        item.src.stop();
+      } catch (err) {
+        /* already started */
       }
+      const when = originPlayAt + (item.seq - originSeq) * frameSec;
+      const src = audioCtx.createBufferSource();
+      src.buffer = item.buffer;
+      src.connect(gain);
+      src.start(when);
+      item.src = src;
+      item.when = when;
+      src.onended = () => {
+        if (item.src !== src) return;
+        const index = scheduled.indexOf(item);
+        if (index >= 0) scheduled.splice(index, 1);
+      };
     }
-    scheduled = keep;
-    schedulePending();
+    scheduleChain();
+  }
+
+  function setSlowNetwork(on) {
+    if (on && !opusSupported()) {
+      showHomeError('This browser cannot decode Opus');
+      on = false;
+    }
+    codec = on ? 'opus' : 'pcm';
+    localStorage.setItem(SLOW_KEY, on ? '1' : '0');
+    if (el.slowNetwork) el.slowNetwork.checked = on;
+    flushAudio();
+    if (audioCtx) {
+      const previous = audioCtx;
+      audioCtx = null;
+      gain = null;
+      previous.close();
+    }
+    resetDecoder();
+    sendWs({ type: 'stream_codec', codec });
   }
 
   function uiLoop() {
@@ -840,6 +1333,14 @@
   });
   el.delaySlider.addEventListener('input', onDelayInput);
 
+  if (localStorage.getItem(SLOW_KEY) === '1' && opusSupported()) {
+    codec = 'opus';
+    if (el.slowNetwork) el.slowNetwork.checked = true;
+  }
+  if (el.slowNetwork) {
+    el.slowNetwork.addEventListener('change', () => setSlowNetwork(el.slowNetwork.checked));
+  }
+
   const savedDelay = parseInt(localStorage.getItem(DELAY_KEY) || '0', 10);
   if (Number.isFinite(savedDelay)) {
     delayCompensationMs = Math.max(-250, Math.min(250, savedDelay));
@@ -907,10 +1408,13 @@
     if (e.key === 'Enter') el.chatSend.click();
   });
 
+  if (el.clientToken) el.clientToken.value = localStorage.getItem(CLIENT_TOKEN_KEY) || '';
+  if (el.clientLabel) el.clientLabel.value = localStorage.getItem(CLIENT_LABEL_KEY) || '';
+
   bindMediaSession();
   connectWs();
   refreshHealth();
   setInterval(refreshHealth, 5000);
-  scheduleTimer = setInterval(schedulePending, 20);
+  scheduleTimer = setInterval(scheduleChain, 20);
   uiLoop();
 })();

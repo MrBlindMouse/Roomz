@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.config import library_base
 from app.mpd_access import get_mpd
-from app.mpd_client import MpdClient, MpdError
+from app.mpd_client import MpdClient, MpdError, log_mpd_error
 from app.schemas import LibraryOut, LibraryTrack, ScanResult
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _mpd_error(exc: MpdError) -> HTTPException:
+    log_mpd_error(logger, exc, "MPD API")
     return HTTPException(status_code=503, detail=str(exc))
 
 
