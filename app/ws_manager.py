@@ -189,7 +189,9 @@ class ConnectionManager:
             return "unknown"
         return f"{client.host}:{client.port}"
 
-    def authenticate_client(self, websocket: WebSocket, token: object, label: object) -> tuple[bool, str]:
+    def authenticate_client(
+        self, websocket: WebSocket, token: object, label: object
+    ) -> tuple[bool, str]:
         peer = self._peers.get(websocket)
         if peer is None:
             return False, "WebSocket not connected"

@@ -21,14 +21,21 @@ def test_try_authenticate_requires_token(monkeypatch: pytest.MonkeyPatch) -> Non
     assert peer.label == "kitchen"
 
 
-def test_ingest_filters_level(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_ingest_filters_level(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     monkeypatch.setenv("CLIENT_LOG_LEVEL", "WARNING")
     monkeypatch.delenv("ROOMZ_CLIENT_TOKEN", raising=False)
     peer = ClientLogPeer(authenticated=True, label="test")
     caplog.set_level(logging.DEBUG, logger="roomz.client")
     ingest_client_logs(
         peer,
-        {"entries": [{"level": "info", "message": "hidden"}, {"level": "warn", "message": "shown"}]},
+        {
+            "entries": [
+                {"level": "info", "message": "hidden"},
+                {"level": "warn", "message": "shown"},
+            ]
+        },
         "127.0.0.1:9",
     )
     assert "hidden" not in caplog.text

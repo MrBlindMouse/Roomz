@@ -43,7 +43,9 @@ class ClientLogPeer:
     window_count: int = 0
 
 
-def try_authenticate(peer: ClientLogPeer, token: object, label: object, host: str) -> tuple[bool, str]:
+def try_authenticate(
+    peer: ClientLogPeer, token: object, label: object, host: str
+) -> tuple[bool, str]:
     """Mark a WebSocket peer as allowed to send client logs."""
     expected = roomz_client_token()
     if expected is not None:
