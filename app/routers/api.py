@@ -78,7 +78,9 @@ async def get_art(file: str = Query(..., min_length=1), mpd: MpdClient = Depends
     if loaded is None:
         raise HTTPException(status_code=404, detail="No artwork")
     data, media_type = loaded
-    return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
+    return Response(
+        content=data, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"}
+    )
 
 
 @router.get("/library", response_model=LibraryOut)
