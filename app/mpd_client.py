@@ -123,6 +123,22 @@ def _repeat_mode(status: dict[str, str]) -> int:
     return 0
 
 
+def _track_number(song: dict[str, str]) -> str | None:
+    raw = (song.get("Track") or song.get("Tracknumber") or "").strip()
+    if not raw:
+        return None
+    head = raw.split("/")[0].strip()
+    return head or None
+
+
+def _year_from_song(song: dict[str, str]) -> str | None:
+    for key in ("Date", "OriginalDate", "Year"):
+        val = (song.get(key) or "").strip()
+        if len(val) >= 4 and val[:4].isdigit():
+            return val[:4]
+    return None
+
+
 def _duration_of(song: dict[str, str]) -> float:
     raw = song.get("duration") or song.get("Time")
     if not raw:
@@ -190,6 +206,10 @@ def build_status(
         "song_id": int(song_id) if song_id is not None else None,
         "title": song.get("Title") or (Path(song["file"]).name if song.get("file") else ""),
         "artist": song.get("Artist") or "",
+        "album": song.get("Album") or "",
+        "genre": song.get("Genre") or "",
+        "track": _track_number(song),
+        "year": _year_from_song(song),
         "file": song.get("file") or "",
         "random": status.get("random") == "1",
         "repeat": _repeat_mode(status),
@@ -387,6 +407,43 @@ class MpdClient:
                 await writer.wait_closed()
             except Exception:
                 pass
+
+    async def fetch_album_art(self, uri: str) -> bytes | None:
+        """Return embedded cover bytes for a library URI, or None when MPD has none."""
+        if not uri:
+            return None
+        payload = encode_command("albumart", uri) + "\n"
+        async with self._lock:
+            try:
+                await self._ensure()
+                assert self._reader is not None and self._writer is not None
+                self._writer.write(payload.encode())
+                await self._writer.drain()
+                while True:
+                    raw = await self._reader.readline()
+                    if not raw:
+                        raise MpdError("connection closed")
+                    text = raw.decode("utf-8", "replace").rstrip("\r\n")
+                    if text.startswith("ACK"):
+                        return None
+                    if text.startswith("binary:"):
+                        try:
+                            size = int(text.split(":", 1)[1].strip())
+                        except ValueError:
+                            return None
+                        data = await self._reader.readexactly(size)
+                        await self._reader.readline()
+                        return data
+                    if text == "OK":
+                        return None
+            except MpdError:
+                return None
+            except asyncio.IncompleteReadError:
+                await self._drop()
+                return None
+            except Exception:
+                await self._drop()
+                return None
 
     async def _command(self, line: str) -> list[str]:
         return await self._request(line + "\n")

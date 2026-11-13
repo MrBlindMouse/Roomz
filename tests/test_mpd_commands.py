@@ -110,3 +110,24 @@ def test_build_status_repeat_and_playing() -> None:
     assert message["server_timestamp"] == 100.0
     assert message["playlist"][0]["id"] == 7
     assert message["stream"]["rate"] == 44100
+
+
+def test_build_status_includes_rich_metadata() -> None:
+    message = build_status(
+        {"state": "play", "songid": "3"},
+        {
+            "file": "a/song.mp3",
+            "Title": "Song",
+            "Artist": "Band",
+            "Album": "Record",
+            "Genre": "Rock",
+            "Date": "1999-01-01",
+            "Track": "2/10",
+        },
+        [],
+        0.0,
+    )
+    assert message["album"] == "Record"
+    assert message["genre"] == "Rock"
+    assert message["track"] == "2"
+    assert message["year"] == "1999"

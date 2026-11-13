@@ -25,7 +25,7 @@
     <div class="meta">
       <span id="ws-status" class="ws-status">Connecting…</span>
       <span id="sync-health" class="sync-health">Syncing clock</span>
-      <label class="label label--inline">
+      <label class="label label--inline" title="Shifts playback on this device only. Clock sync and buffering in the header are automatic.">
         <span>Speaker delay (ms)</span>
         <input type="range" id="delay-slider" min="-250" max="250" value="0" />
         <span id="delay-value">0</span>
@@ -37,7 +37,14 @@
     </div>
   </header>
 
-  <p id="status-banner" class="notice is-hidden" role="status"></p>
+  <div id="status-banner" class="notice is-hidden" role="status">
+    <p class="notice__lead">Fix these before playback will work:</p>
+    <ul id="status-problems" class="notice-list"></ul>
+  </div>
+
+  <button type="button" id="audio-unlock" class="audio-unlock is-hidden">
+    Tap to enable sound
+  </button>
 
   <main class="main">
     <aside id="panel-library" class="panel panel--library is-hidden">
@@ -50,6 +57,7 @@
         <input type="file" id="file-input" accept="audio/*" class="input--hidden" multiple />
         <button type="button" id="btn-upload" class="btn">Upload</button>
         <button type="button" id="btn-scan" class="btn">Scan</button>
+        <p id="upload-status" class="upload-status is-hidden" aria-live="polite"></p>
       </div>
       <div class="section section--grow">
         <h2 class="heading">All media</h2>
@@ -61,11 +69,18 @@
 
     <section class="content">
       <p id="home-error" class="notice is-hidden" role="alert"></p>
+      <p id="setup-hint" class="setup-hint">Speaker delay is for this device only. Connection and buffer status in the header sync automatically.</p>
       <div class="now-playing">
-        <div id="album-art" class="art">♪</div>
+        <div id="album-art" class="art">
+          <img id="album-art-img" class="art__img is-hidden" alt="" />
+          <span id="album-art-fallback" class="art__fallback" aria-hidden="true">♪</span>
+        </div>
         <div class="info">
           <div id="now-title" class="title">—</div>
           <div id="now-artist" class="artist">—</div>
+          <div id="now-album" class="now-album">—</div>
+          <p id="now-meta" class="now-meta"></p>
+          <p id="now-up-next" class="now-up-next is-hidden"></p>
           <div class="seek">
             <span id="progress-time" class="progress-time">0:00</span>
             <input type="range" id="seek-bar" min="0" max="100" value="0" />

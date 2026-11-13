@@ -12,5 +12,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("MPD_HOST", "127.0.0.1")
     monkeypatch.setenv("MPD_PORT", "9")
     monkeypatch.setenv("ROOMZ_FIFO", "/tmp/roomz-pytest-no-such-fifo")
+    monkeypatch.delenv("CLIENT_LOG_LEVEL", raising=False)
+    monkeypatch.delenv("ROOMZ_CLIENT_TOKEN", raising=False)
     with TestClient(app) as test_client:
         yield test_client

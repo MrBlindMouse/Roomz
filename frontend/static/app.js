@@ -47,6 +47,13 @@
   let songId = null;
   let title = '';
   let artist = '';
+  let album = '';
+  let genre = '';
+  let year = '';
+  let track = '';
+  let trackFile = '';
+  let artObjectUrl = '';
+  let artLoadingFor = '';
   let playbackState = 'stop';
   let elapsed = 0;
   let duration = 0;
@@ -97,6 +104,12 @@
     delayValue: $('delay-value'),
     nowTitle: $('now-title'),
     nowArtist: $('now-artist'),
+    nowAlbum: $('now-album'),
+    nowMeta: $('now-meta'),
+    nowUpNext: $('now-up-next'),
+    albumArt: $('album-art'),
+    albumArtImg: $('album-art-img'),
+    albumArtFallback: $('album-art-fallback'),
     progressTime: $('progress-time'),
     seekBar: $('seek-bar'),
     remainingTime: $('remaining-time'),
@@ -109,6 +122,9 @@
     libraryBase: $('library-base'),
     libraryError: $('library-error'),
     statusBanner: $('status-banner'),
+    statusProblems: $('status-problems'),
+    audioUnlock: $('audio-unlock'),
+    uploadStatus: $('upload-status'),
     homeError: $('home-error'),
     fileInput: $('file-input'),
     librarySearch: $('library-search'),
@@ -137,9 +153,17 @@
   };
 
   (function readClientTokenFromQuery() {
-    const token = new URLSearchParams(location.search).get('client_token');
+    const params = new URLSearchParams(location.search);
+    const token = params.get('client_token');
     if (token) {
       localStorage.setItem(CLIENT_TOKEN_KEY, token);
+    }
+    if (params.get('speaker') === '1') {
+      localStorage.setItem(SPEAKER_KEY, '1');
+    }
+    const label = params.get('label');
+    if (label && label.trim()) {
+      localStorage.setItem(CLIENT_LABEL_KEY, label.trim());
     }
   })();
 
@@ -237,6 +261,22 @@
     if (el.homeError) el.homeError.classList.add('is-hidden');
   }
 
+  function renderHealthProblems(lines) {
+    if (!el.statusBanner || !el.statusProblems) return;
+    if (!lines.length) {
+      el.statusProblems.innerHTML = '';
+      el.statusBanner.classList.add('is-hidden');
+      return;
+    }
+    el.statusProblems.innerHTML = '';
+    lines.forEach((line) => {
+      const li = document.createElement('li');
+      li.textContent = line;
+      el.statusProblems.appendChild(li);
+    });
+    el.statusBanner.classList.remove('is-hidden');
+  }
+
   async function refreshHealth() {
     if (!el.statusBanner) return;
     try {
@@ -244,19 +284,34 @@
       const body = await response.json();
       const problems = Array.isArray(body.problems) ? body.problems : [];
       applyClientLogPolicy(body);
-      if (!problems.length) {
-        el.statusBanner.textContent = '';
-        el.statusBanner.classList.add('is-hidden');
-        return;
-      }
-      el.statusBanner.textContent = problems.join(' ');
-      el.statusBanner.classList.remove('is-hidden');
+      renderHealthProblems(problems);
     } catch (err) {
       queueClientLog('error', 'Health check', err && err.message ? err.message : String(err));
       console.error('Health check', err);
-      el.statusBanner.textContent = 'Cannot reach the Roomz server.';
-      el.statusBanner.classList.remove('is-hidden');
+      renderHealthProblems(['Cannot reach the Roomz server. Check the address and that Roomz is running.']);
     }
+  }
+
+  function needsAudioUnlock() {
+    return playbackState === 'play' && (!audioCtx || audioCtx.state === 'suspended');
+  }
+
+  function updateAudioUnlockOverlay() {
+    if (!el.audioUnlock) return;
+    el.audioUnlock.classList.toggle('is-hidden', !needsAudioUnlock());
+  }
+
+  function setUploadStatus(text) {
+    if (!el.uploadStatus) return;
+    const show = Boolean(text);
+    el.uploadStatus.textContent = text || '';
+    el.uploadStatus.classList.toggle('is-hidden', !show);
+  }
+
+  function setUploading(active) {
+    if (el.btnUpload) el.btnUpload.disabled = active;
+    if (el.btnScan && active) el.btnScan.disabled = true;
+    if (el.btnScan && !active && !scanInProgress) el.btnScan.disabled = false;
   }
 
   function setScanning(active) {
@@ -295,10 +350,91 @@
     return div.innerHTML;
   }
 
+  function upNextTrack() {
+    if (!playlist.length || songId == null) return null;
+    const index = playlist.findIndex((item) => item.id === songId);
+    if (index < 0 || index + 1 >= playlist.length) return null;
+    return playlist[index + 1];
+  }
+
+  function formatNowMeta() {
+    const parts = [];
+    if (track) parts.push(`Track ${track}`);
+    if (genre) parts.push(genre);
+    if (year) parts.push(year);
+    return parts.join(' · ');
+  }
+
+  function clearAlbumArt() {
+    if (artObjectUrl) {
+      URL.revokeObjectURL(artObjectUrl);
+      artObjectUrl = '';
+    }
+    artLoadingFor = '';
+    if (el.albumArtImg) {
+      el.albumArtImg.removeAttribute('src');
+      el.albumArtImg.classList.add('is-hidden');
+    }
+    if (el.albumArtFallback) el.albumArtFallback.classList.remove('is-hidden');
+  }
+
+  async function refreshAlbumArt(file) {
+    if (!file) {
+      clearAlbumArt();
+      return;
+    }
+    if (artLoadingFor === file && artObjectUrl) return;
+    if (artLoadingFor === file) return;
+    artLoadingFor = file;
+    const want = file;
+    try {
+      const response = await fetch(`${API_BASE}/api/art?${new URLSearchParams({ file: want })}`);
+      if (want !== trackFile) return;
+      if (!response.ok) {
+        clearAlbumArt();
+        artLoadingFor = '';
+        return;
+      }
+      const blob = await response.blob();
+      if (want !== trackFile) return;
+      if (artObjectUrl) URL.revokeObjectURL(artObjectUrl);
+      artObjectUrl = URL.createObjectURL(blob);
+      if (el.albumArtImg) {
+        el.albumArtImg.src = artObjectUrl;
+        el.albumArtImg.alt = album ? `${album} cover` : 'Album art';
+        el.albumArtImg.classList.remove('is-hidden');
+      }
+      if (el.albumArtFallback) el.albumArtFallback.classList.add('is-hidden');
+      updateMediaSession();
+    } catch (err) {
+      queueClientLog('warn', 'Album art', err && err.message ? err.message : String(err));
+      if (want === trackFile) clearAlbumArt();
+    } finally {
+      if (artLoadingFor === want) artLoadingFor = '';
+    }
+  }
+
   function updateNowPlayingUI() {
     const pos = displayElapsed();
     el.nowTitle.textContent = title || '—';
     el.nowArtist.textContent = artist || '—';
+    if (el.nowAlbum) el.nowAlbum.textContent = album || '—';
+    if (el.nowMeta) {
+      const meta = formatNowMeta();
+      el.nowMeta.textContent = meta;
+      el.nowMeta.classList.toggle('is-hidden', !meta);
+    }
+    if (el.nowUpNext && el.nowUpNext.classList) {
+      const next = upNextTrack();
+      if (next) {
+        const name = next.title || next.file || '—';
+        el.nowUpNext.textContent = `Up next: ${name}`;
+        el.nowUpNext.classList.remove('is-hidden');
+      } else {
+        el.nowUpNext.textContent = '';
+        el.nowUpNext.classList.add('is-hidden');
+      }
+    }
     el.progressTime.textContent = formatTime(pos);
     el.remainingTime.textContent = duration > 0 ? formatTime(duration - pos) : '—';
     if (!seekHold && el.seekBar) {
@@ -390,6 +526,16 @@
     }
     title = msg.title || '';
     artist = msg.artist || '';
+    album = msg.album || '';
+    genre = msg.genre || '';
+    year = msg.year || '';
+    track = msg.track || '';
+    const nextFile = msg.file || '';
+    if (nextFile !== trackFile) {
+      trackFile = nextFile;
+      if (trackFile) refreshAlbumArt(trackFile);
+      else clearAlbumArt();
+    }
     randomOn = !!msg.random;
     repeatMode = msg.repeat || 0;
     playlist = msg.playlist || [];
@@ -410,9 +556,12 @@
   function updateMediaSession() {
     if (!('mediaSession' in navigator)) return;
     const session = navigator.mediaSession;
+    const artwork = artObjectUrl ? [{ src: artObjectUrl }] : [];
     session.metadata = new MediaMetadata({
       title: title || 'Roomz',
-      artist: artist || 'Roomz',
+      artist: artist || '',
+      album: album || '',
+      artwork,
     });
     session.playbackState = playbackState === 'play' ? 'playing' : 'paused';
     if (!(duration > 0)) return;
@@ -780,7 +929,12 @@
 
   function unlockAudio() {
     ensureAudio();
-    if (audioCtx.state === 'suspended') audioCtx.resume();
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume().catch((err) => {
+        console.error('AudioContext.resume', err);
+      });
+    }
+    updateAudioUnlockOverlay();
   }
 
   function playAtFor(serverTs) {
@@ -1234,6 +1388,7 @@
 
   function uiLoop() {
     updateNowPlayingUI();
+    updateAudioUnlockOverlay();
     if (el.syncHealth) {
       const label = syncLabel();
       if (el.syncHealth.textContent !== label) el.syncHealth.textContent = label;
@@ -1242,6 +1397,12 @@
   }
 
   document.addEventListener('pointerdown', unlockAudio);
+  if (el.audioUnlock) {
+    el.audioUnlock.addEventListener('click', (event) => {
+      event.stopPropagation();
+      unlockAudio();
+    });
+  }
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') startClockSync();
     syncWakeLock();
@@ -1277,6 +1438,7 @@
   if (localStorage.getItem(SPEAKER_KEY) === '1') {
     document.body.classList.add('is-speaker');
     if (el.btnSpeaker) el.btnSpeaker.classList.add('is-active');
+    unlockAudio();
   }
   if (el.btnMenuChat && el.panelChat) {
     el.btnMenuChat.addEventListener('click', () => {
@@ -1353,7 +1515,12 @@
   el.fileInput.addEventListener('change', async () => {
     const files = el.fileInput.files;
     if (!files || !files.length) return;
-    for (const file of files) {
+    const total = files.length;
+    let failed = 0;
+    setUploading(true);
+    for (let index = 0; index < total; index += 1) {
+      const file = files[index];
+      setUploadStatus(`Uploading ${index + 1} of ${total}: ${file.name}`);
       const fd = new FormData();
       fd.append('file', file);
       if (el.uploadFolder && el.uploadFolder.value.trim()) {
@@ -1362,16 +1529,29 @@
       try {
         const r = await fetch(`${API_BASE}/api/upload`, { method: 'POST', body: fd });
         if (!r.ok) {
+          failed += 1;
           const err = await r.json().catch(() => ({ detail: r.statusText }));
-          reportError('Upload failed', err, (err.detail != null ? String(err.detail) : r.statusText) || 'Upload failed');
+          const msg = (err.detail != null ? String(err.detail) : r.statusText) || 'Upload failed';
+          reportError('Upload failed', err, msg);
+          showHomeError(msg);
           continue;
         }
         hideLibraryError();
+        hideHomeError();
       } catch (e) {
+        failed += 1;
         reportError('Upload failed', e, 'Upload failed');
+        showHomeError('Upload failed');
       }
     }
     el.fileInput.value = '';
+    setUploading(false);
+    if (failed === 0) {
+      setUploadStatus(total === 1 ? 'Upload finished.' : `Uploaded ${total} files.`);
+    } else {
+      setUploadStatus(`Uploaded ${total - failed} of ${total} (${failed} failed).`);
+    }
+    setTimeout(() => setUploadStatus(''), 4000);
     fetchLibrary();
   });
 
@@ -1384,7 +1564,9 @@
       if (!r.ok) {
         const err = await r.json().catch(() => ({ detail: r.statusText }));
         const msg = (r.status === 409 ? (err.detail ?? 'Scan already in progress') : (err.detail != null ? String(err.detail) : r.statusText)) || 'Scan failed';
-        reportError('Scan failed', err, msg);
+        queueClientLog('error', 'Scan failed', msg);
+        console.error('Scan failed', err);
+        showHomeError(msg);
         return;
       }
       hideLibraryError();

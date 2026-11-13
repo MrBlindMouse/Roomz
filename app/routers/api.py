@@ -6,8 +6,10 @@ import time
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 
+from app.art import load_album_art, resolve_library_file
 from app.config import library_base
 from app.mpd_access import get_mpd
 from app.mpd_client import MpdClient, MpdError, log_mpd_error
@@ -60,6 +62,23 @@ def _upload_subdir(raw: str, root: Path) -> tuple[Path, str]:
     if not dest.is_relative_to(root.resolve()):
         raise HTTPException(status_code=400, detail="Invalid folder")
     return dest, rel.as_posix()
+
+
+@router.get("/art")
+async def get_art(file: str = Query(..., min_length=1), mpd: MpdClient = Depends(get_mpd)):
+    """Album cover for a library path: MPD embedded art, then folder cover image."""
+    try:
+        resolve_library_file(file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid file") from exc
+    try:
+        loaded = await load_album_art(mpd, file)
+    except MpdError as exc:
+        raise _mpd_error(exc) from exc
+    if loaded is None:
+        raise HTTPException(status_code=404, detail="No artwork")
+    data, media_type = loaded
+    return Response(content=data, media_type=media_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
 @router.get("/library", response_model=LibraryOut)

@@ -154,8 +154,51 @@
     font-size: 0.875rem;
   }
 
+  .notice__lead {
+    font-weight: 500;
+    margin-bottom: 0.35rem;
+  }
+
+  .notice-list {
+    list-style: disc;
+    margin-left: 1.25rem;
+  }
+
+  .notice-list li + li {
+    margin-top: 0.25rem;
+  }
+
   .content .notice {
     margin: 0 0 0.75rem;
+  }
+
+  .setup-hint {
+    font-size: 0.75rem;
+    color: var(--color-ink-subtle);
+    margin-bottom: 0.75rem;
+    line-height: 1.35;
+  }
+
+  .upload-status {
+    flex: 1 0 100%;
+    font-size: 0.75rem;
+    color: var(--color-ink-muted);
+  }
+
+  .audio-unlock {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--color-ink-on-accent);
+    background: color-mix(in lch, var(--lch-black) 45%, transparent);
+    border: none;
+    cursor: pointer;
   }
 
   .playlist,
